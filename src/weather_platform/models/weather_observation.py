@@ -1,13 +1,13 @@
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Date, Index, Numeric, String, UniqueConstraint
+from sqlalchemy import Date, Index, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from weather_platform.models.base import Base, TimestampMixin
+from weather_platform.models.base import BaseEntity
 
 
-class WeatherObservation(TimestampMixin, Base):
+class WeatherObservation(BaseEntity):
     __tablename__ = "weather_observations"
     __table_args__ = (
         UniqueConstraint(
@@ -19,7 +19,6 @@ class WeatherObservation(TimestampMixin, Base):
         Index("ix_weather_observations_observation_date", "observation_date"),
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     station_id: Mapped[str] = mapped_column(String, nullable=False)
     observation_date: Mapped[date] = mapped_column(Date, nullable=False)
     max_temp_c: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
