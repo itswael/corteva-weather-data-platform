@@ -9,7 +9,12 @@ from collections.abc import Sequence
 from weather_platform.models.weather_observation import WeatherObservation
 from weather_platform.models.weather_yearly_stat import WeatherYearlyStat
 from weather_platform.repositories.base import WeatherRepository
-from weather_platform.schemas.weather import WeatherObservationCreate, WeatherYearlyStatCreate
+from weather_platform.schemas.weather import (
+    WeatherObservationCreate,
+    WeatherObservationRead,
+    WeatherYearlyStatCreate,
+    PaginatedWeatherObservationRead,
+)
 
 
 class WeatherService:
@@ -75,3 +80,44 @@ class WeatherService:
             Sequence[WeatherYearlyStat]: Statistics ordered by year ascending
         """
         return self.repository.list_yearly_stats(station_id)
+    
+    def query_observations(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+        station_id: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> PaginatedWeatherObservationRead:
+        """Query observations with pagination and filtering.
+        
+        Delegates to repository for the actual query, then packages the results
+        into a paginated response DTO.
+        
+        Args:
+            skip: Number of records to skip (pagination offset)
+            limit: Maximum records per page (capped at 1000)
+            station_id: Optional station identifier filter
+            start_date: Optional minimum observation date
+            end_date: Optional maximum observation date
+            
+        Returns:
+            PaginatedWeatherObservationRead: Paginated observations with total count
+        """
+        # Cap limit to prevent excessive data transfers
+        safe_limit = min(limit, 1000)
+        
+        observations, total_count = self.repository.query_observations(
+            skip=skip,
+            limit=safe_limit,
+            station_id=station_id,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        
+        return PaginatedWeatherObservationRead(
+            items=[WeatherObservationRead.model_validate(obs) for obs in observations],
+            total=total_count,
+            skip=skip,
+            limit=safe_limit,
+        )

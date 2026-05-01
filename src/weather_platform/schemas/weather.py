@@ -4,6 +4,21 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class PaginatedWeatherObservationRead(BaseModel):
+    """Paginated response for weather observations.
+    
+    Attributes:
+        items: List of observation records for the current page
+        total: Total count of observations matching the filter criteria
+        skip: Number of records skipped (pagination offset)
+        limit: Maximum records per page
+    """
+    items: list["WeatherObservationRead"]
+    total: int
+    skip: int
+    limit: int
+
+
 class WeatherObservationCreate(BaseModel):
     station_id: str = Field(min_length=1)
     observation_date: date

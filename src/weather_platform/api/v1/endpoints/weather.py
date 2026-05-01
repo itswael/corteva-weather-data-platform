@@ -1,6 +1,6 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from weather_platform.api.dependencies import get_weather_service
 from weather_platform.schemas.weather import (
@@ -8,6 +8,7 @@ from weather_platform.schemas.weather import (
     WeatherObservationRead,
     WeatherYearlyStatCreate,
     WeatherYearlyStatRead,
+    PaginatedWeatherObservationRead,
 )
 from weather_platform.services.weather import WeatherService
 
@@ -59,3 +60,36 @@ def list_yearly_stats(
     service: WeatherService = Depends(get_weather_service),
 ) -> list[WeatherYearlyStatRead]:
     return list(service.list_yearly_stats(station_id))
+
+
+@router.get("/observations", response_model=PaginatedWeatherObservationRead)
+def query_observations(
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum records per page"),
+    station_id: str | None = Query(None, description="Filter by station identifier"),
+    start_date: date | None = Query(None, description="Minimum observation date (inclusive)"),
+    end_date: date | None = Query(None, description="Maximum observation date (inclusive)"),
+    service: WeatherService = Depends(get_weather_service),
+) -> PaginatedWeatherObservationRead:
+    """Query weather observations with pagination and filtering.
+    
+    Returns a paginated list of observations optionally filtered by station_id
+    and date range. Results are ordered by observation date descending.
+    
+    Query Parameters:
+        skip: Pagination offset (default: 0)
+        limit: Page size, max 1000 (default: 100)
+        station_id: Optional filter by NOAA station identifier
+        start_date: Optional minimum date (inclusive)
+        end_date: Optional maximum date (inclusive)
+    
+    Returns:
+        PaginatedWeatherObservationRead: Observations with pagination metadata
+    """
+    return service.query_observations(
+        skip=skip,
+        limit=limit,
+        station_id=station_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
