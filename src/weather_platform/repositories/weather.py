@@ -1,13 +1,15 @@
 from collections.abc import Sequence
 from datetime import date
+from decimal import Decimal
 
-from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import func, and_, extract, select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from weather_platform.models.weather_observation import WeatherObservation
 from weather_platform.models.weather_yearly_stat import WeatherYearlyStat
-from weather_platform.repositories.base import WeatherRepository
+from weather_platform.repositories.base import WeatherRepository, YearlyAggregateData
 from weather_platform.schemas.weather import WeatherObservationCreate, WeatherYearlyStatCreate
 
 
@@ -15,9 +17,22 @@ class SQLAlchemyWeatherRepository(WeatherRepository):
     def __init__(self, session: Session) -> None:
         self.session = session
 
+    def _insert_for_current_bind(self, table):
+        """Return a backend-specific INSERT statement for the active session.
+
+        The repository supports both PostgreSQL and SQLite in tests, so this
+        helper selects the correct dialect insert construct before chaining the
+        UPSERT clause in the calling method.
+        """
+        bind = self.session.get_bind()
+        dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
+        if dialect_name == "sqlite":
+            return sqlite_insert(table)
+        return postgresql_insert(table)
+
     def upsert_observation(self, observation: WeatherObservationCreate) -> WeatherObservation:
         statement = (
-            insert(WeatherObservation)
+            self._insert_for_current_bind(WeatherObservation)
             .values(**observation.model_dump())
             .on_conflict_do_update(
                 index_elements=[WeatherObservation.station_id, WeatherObservation.observation_date],
@@ -44,9 +59,11 @@ class SQLAlchemyWeatherRepository(WeatherRepository):
         return self.session.scalars(statement).one_or_none()
 
     def upsert_yearly_stat(self, stat: WeatherYearlyStatCreate) -> WeatherYearlyStat:
+        values = stat.model_dump()
+        # Use the unique station/year constraint so repeated reprocessing updates the same row.
         statement = (
-            insert(WeatherYearlyStat)
-            .values(**stat.model_dump())
+            self._insert_for_current_bind(WeatherYearlyStat)
+            .values(**values)
             .on_conflict_do_update(
                 index_elements=[WeatherYearlyStat.station_id, WeatherYearlyStat.year],
                 set_={
@@ -73,3 +90,46 @@ class SQLAlchemyWeatherRepository(WeatherRepository):
             .order_by(WeatherYearlyStat.year.asc())
         )
         return self.session.scalars(statement).all()
+
+    def aggregate_yearly_observations(
+        self, station_id: str, year: int
+    ) -> YearlyAggregateData:
+        """Calculate yearly aggregates from observations, ignoring NULL values.
+        
+        Uses SQL aggregate functions to calculate:
+        - avg(max_temp_c) for non-NULL records
+        - avg(min_temp_c) for non-NULL records
+        - sum(precipitation_cm) for non-NULL records
+        - count(*) of observations in the year
+        
+        Args:
+            station_id: NOAA station identifier
+            year: Calendar year for aggregation
+            
+        Returns:
+            YearlyAggregateData: Aggregated measurements
+        """
+        # Build query to aggregate observations by station/year
+        # extract(year, date) requires the observation_date column
+        statement = select(
+            func.avg(WeatherObservation.max_temp_c).label("avg_max_temp_c"),
+            func.avg(WeatherObservation.min_temp_c).label("avg_min_temp_c"),
+            func.sum(WeatherObservation.precipitation_cm).label("total_precipitation_cm"),
+            func.count(WeatherObservation.id).label("observation_count"),
+        ).where(
+            and_(
+                WeatherObservation.station_id == station_id,
+                extract("year", WeatherObservation.observation_date) == year,
+            )
+        )
+
+        # Execute and extract results
+        result = self.session.execute(statement).one()
+        
+        # Build result object with Decimal conversion for consistency
+        return YearlyAggregateData(
+            avg_max_temp_c=Decimal(str(result.avg_max_temp_c)) if result.avg_max_temp_c is not None else None,
+            avg_min_temp_c=Decimal(str(result.avg_min_temp_c)) if result.avg_min_temp_c is not None else None,
+            total_precipitation_cm=Decimal(str(result.total_precipitation_cm)) if result.total_precipitation_cm is not None else None,
+            observation_count=result.observation_count or 0,
+        )
