@@ -13,6 +13,7 @@ from weather_platform.ingestion.transformation import (
     WeatherObservationTransformationService,
     build_weather_observation_transformation_service,
 )
+from weather_platform.utils.structured_logging import log_structured_event
 
 if TYPE_CHECKING:
     from weather_platform.services.weather import WeatherService
@@ -188,8 +189,18 @@ class WeatherFileIngestor:
         self.parser = parser or WeatherStationTextFileParser()
 
     def ingest(self, records: Iterable[WeatherObservationCreate]):
-        return [self.service.ingest_observation(record) for record in records]
+        return self.service.ingest_observations(records)
 
     def ingest_file(self, file_path: str | Path):
-        records = self.parser.parse_file(file_path)
-        return self.ingest(records)
+        path = Path(file_path)
+        records = self.parser.parse_file(path)
+        summary = self.ingest(records)
+        log_structured_event(
+            "weather_file_ingestion_completed",
+            source_file=path.name,
+            processed=summary.processed,
+            inserted=summary.inserted,
+            skipped_duplicates=summary.skipped_duplicates,
+            duration_ms=summary.duration_ms,
+        )
+        return summary
