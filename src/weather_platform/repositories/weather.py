@@ -1,10 +1,10 @@
 from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
-from functools import lru_cache
 
 from sqlalchemy import func, and_, extract, select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from weather_platform.models.weather_observation import WeatherObservation
@@ -17,9 +17,22 @@ class SQLAlchemyWeatherRepository(WeatherRepository):
     def __init__(self, session: Session) -> None:
         self.session = session
 
+    def _insert_for_current_bind(self, table):
+        """Return a backend-specific INSERT statement for the active session.
+
+        The repository supports both PostgreSQL and SQLite in tests, so this
+        helper selects the correct dialect insert construct before chaining the
+        UPSERT clause in the calling method.
+        """
+        bind = self.session.get_bind()
+        dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
+        if dialect_name == "sqlite":
+            return sqlite_insert(table)
+        return postgresql_insert(table)
+
     def upsert_observation(self, observation: WeatherObservationCreate) -> WeatherObservation:
         statement = (
-            insert(WeatherObservation)
+            self._insert_for_current_bind(WeatherObservation)
             .values(**observation.model_dump())
             .on_conflict_do_update(
                 index_elements=[WeatherObservation.station_id, WeatherObservation.observation_date],
@@ -46,9 +59,11 @@ class SQLAlchemyWeatherRepository(WeatherRepository):
         return self.session.scalars(statement).one_or_none()
 
     def upsert_yearly_stat(self, stat: WeatherYearlyStatCreate) -> WeatherYearlyStat:
+        values = stat.model_dump()
+        # Use the unique station/year constraint so repeated reprocessing updates the same row.
         statement = (
-            insert(WeatherYearlyStat)
-            .values(**stat.model_dump())
+            self._insert_for_current_bind(WeatherYearlyStat)
+            .values(**values)
             .on_conflict_do_update(
                 index_elements=[WeatherYearlyStat.station_id, WeatherYearlyStat.year],
                 set_={
