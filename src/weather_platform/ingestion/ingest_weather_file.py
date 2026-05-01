@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from weather_platform.schemas.weather import WeatherObservationCreate
+from weather_platform.ingestion.transformation import (
+    WeatherObservationTransformationService,
+    build_weather_observation_transformation_service,
+)
 
 if TYPE_CHECKING:
     from weather_platform.services.weather import WeatherService
@@ -41,12 +45,10 @@ class WeatherStationFileParser(ABC):
         self,
         *,
         missing_value_sentinel: str = "-9999",
-        temperature_scale: Decimal = Decimal("0.1"),
-        precipitation_scale: Decimal = Decimal("0.01"),
+        transformation_service: WeatherObservationTransformationService | None = None,
     ) -> None:
         self.missing_value_sentinel = missing_value_sentinel
-        self.temperature_scale = temperature_scale
-        self.precipitation_scale = precipitation_scale
+        self.transformation_service = transformation_service or build_weather_observation_transformation_service()
 
     def parse_file(self, file_path: str | Path) -> list[WeatherObservationCreate]:
         path = Path(file_path)
@@ -97,22 +99,14 @@ class WeatherStationFileParser(ABC):
             )
 
     def _transform_raw_record(self, raw_record: WeatherStationRawRecord) -> WeatherObservationCreate:
-        return WeatherObservationCreate(
+        return self.transformation_service.transform(
             station_id=raw_record.station_id,
             observation_date=raw_record.observation_date,
-            max_temp_c=self._scale_measurement(raw_record.max_temp_raw, self.temperature_scale),
-            min_temp_c=self._scale_measurement(raw_record.min_temp_raw, self.temperature_scale),
-            precipitation_cm=self._scale_measurement(
-                raw_record.precipitation_raw,
-                self.precipitation_scale,
-            ),
+            max_temp_raw=raw_record.max_temp_raw,
+            min_temp_raw=raw_record.min_temp_raw,
+            precipitation_raw=raw_record.precipitation_raw,
             source_file=raw_record.source_file,
         )
-
-    def _scale_measurement(self, value: Decimal | None, scale: Decimal) -> Decimal | None:
-        if value is None:
-            return None
-        return (value * scale).quantize(Decimal("0.01"))
 
     def _parse_measurement_token(
         self,
