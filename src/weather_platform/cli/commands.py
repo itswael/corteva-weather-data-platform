@@ -22,14 +22,26 @@ from weather_platform.utils.structured_logging import log_structured_event
 
 def _bootstrap_ingestion_stack(env: Optional[str] = None) -> tuple[WeatherService, WeatherFileIngestor]:
     """Bootstrap the service and ingestion stack with dependency injection.
+    
+    Performs complete setup of the data ingestion pipeline:
+    1. Load environment-specific settings
+    2. Configure logging
+    3. Create database engine and session factory
+    4. Create repository layer (SQLAlchemy-based)
+    5. Create service layer (orchestrates repository operations)
+    6. Create parser (converts raw file text to data objects)
+    7. Create ingestor (orchestrates parse → validate → transform → store)
 
     Args:
-        env: Environment name (local, test, prod). Defaults to LOCAL.
+        env: Environment name (local, test, prod). Defaults to APP_ENV or "local".
 
     Returns:
-        Tuple of (WeatherService, WeatherFileIngestor) ready for ingestion.
+        tuple[WeatherService, WeatherFileIngestor]: Service and ingestor ready for use.
     """
+    # Load environment-appropriate settings
     settings = get_settings(env=env)
+    
+    # Configure application logging based on settings
     configure_logging(settings.log_level)
 
     # Initialize database engine and session factory
@@ -38,11 +50,11 @@ def _bootstrap_ingestion_stack(env: Optional[str] = None) -> tuple[WeatherServic
     # Create a session for this ingestion operation
     session = session_local()
 
-    # Wire repository and service
+    # Wire repository and service layers
     repository = SQLAlchemyWeatherRepository(session=session)
     service = WeatherService(repository=repository)
 
-    # Wire parser and ingestor
+    # Wire parser and ingestor layers
     parser = WeatherStationTextFileParser()
     ingestor = WeatherFileIngestor(service=service, parser=parser)
 
@@ -64,15 +76,33 @@ def _bootstrap_ingestion_stack(env: Optional[str] = None) -> tuple[WeatherServic
 )
 def ingest(file_path: Path, env: str, verbose: bool) -> None:
     """Ingest weather observations from a weather station data file.
+    
+    Reads a NOAA weather station text file and populates the database with
+    individual daily observations. The ingestion is idempotent -- re-running
+    with the same file skips existing observations using database UNIQUE constraints.
 
     FILE_PATH is the path to the weather station text file to ingest.
     Each line should contain: YYYYMMDD max_temp min_temp precipitation
+    
+    Data format example:
+        20230101 -50 -150 0
+        20230102 -30 -100 12
+    
+    Temperature units: tenths of Celsius (e.g., -50 = -5.0°C)
+    Precipitation units: tenths of millimeters (e.g., 12 = 1.2 cm)
 
-    Example:
-        ingest-weather data/USC00110072.txt --env prod
+    Examples:
+        # Ingest into local development database
+        ingest data/USC00110072.txt
+        
+        # Ingest into production database
+        ingest data/USC00110072.txt --env prod
+        
+        # Verbose logging
+        ingest data/USC00110072.txt --verbose
     """
     try:
-        # Log ingestion initiation with production context
+        # Log ingestion initiation with context information
         log_structured_event(
             "weather_file_ingestion_started",
             file_path=str(file_path),
@@ -80,7 +110,7 @@ def ingest(file_path: Path, env: str, verbose: bool) -> None:
             verbose=verbose,
         )
 
-        # Bootstrap the service stack
+        # Bootstrap the service stack with dependency injection
         service, ingestor = _bootstrap_ingestion_stack(env=env)
 
         # Perform ingestion (re-runnable via ON CONFLICT DO NOTHING)

@@ -1,3 +1,9 @@
+"""Weather file parsing and ingestion orchestration.
+
+This module provides the parsing logic (template method pattern) and
+ingestion orchestration for converting weather station text files into
+database records with proper validation and unit conversion.
+"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -20,11 +26,32 @@ if TYPE_CHECKING:
 
 
 class WeatherFileParseError(ValueError):
-    """Raised when a weather station text file cannot be parsed safely."""
+    """Raised when a weather station text file cannot be parsed safely.
+    
+    This exception indicates unrecoverable parse errors such as:
+    - Missing or invalid station ID
+    - Invalid date format
+    - Invalid column counts
+    """
 
 
 @dataclass(frozen=True, slots=True)
 class WeatherStationRawRecord:
+    """Raw measurement record parsed directly from file (before unit conversion).
+    
+    This intermediate representation holds raw values before unit conversion
+    and validation. Using slots and frozen reduces memory usage for large
+    batches of observations.
+    
+    Attributes:
+        station_id: NOAA station identifier from filename
+        observation_date: Parsed observation date
+        max_temp_raw: Raw max temperature (tenths of Celsius or None)
+        min_temp_raw: Raw min temperature (tenths of Celsius or None)
+        precipitation_raw: Raw precipitation (tenths of mm or None)
+        source_file: Filename for audit tracking
+        line_number: Line number in source file for error reporting
+    """
     station_id: str
     observation_date: date
     max_temp_raw: Decimal | None
@@ -73,10 +100,30 @@ class WeatherStationFileParser(ABC):
         return observations
 
     def _should_parse_line(self, raw_line: str) -> bool:
+        """Check if line should be parsed (skip comments and empty lines).
+        
+        Args:
+            raw_line: Line from input file
+            
+        Returns:
+            bool: True if line should be parsed, False to skip
+        """
         stripped = raw_line.strip()
+        # Skip empty lines and lines starting with '#' (comments)
         return bool(stripped) and not stripped.startswith("#")
 
     def _station_id_from_path(self, file_path: Path) -> str:
+        """Extract station ID from filename (stem without extension).
+        
+        Args:
+            file_path: Path object
+            
+        Returns:
+            str: Station ID from filename
+            
+        Raises:
+            WeatherFileParseError: If filename stem is empty or invalid
+        """
         station_id = file_path.stem.strip()
         if not station_id:
             raise WeatherFileParseError(f"Could not derive station id from file name: {file_path}")
@@ -91,41 +138,169 @@ class WeatherStationFileParser(ABC):
         source_file: str,
         line_number: int,
     ) -> WeatherStationRawRecord:
+        """Parse a single line into raw record (implemented by subclass).
+        
+        Args:
+            raw_line: Line from input file
+            station_id: Station ID extracted from filename
+            source_file: Filename for audit tracking
+            line_number: Line number in source file for error messages
+            
+        Returns:
+            WeatherStationRawRecord: Parsed raw record with measurements
+            
+        Raises:
+            WeatherFileParseError: If line cannot be parsed
+        """
         raise NotImplementedError
 
     def _validate_raw_record(self, raw_record: WeatherStationRawRecord) -> None:
-        if not raw_record.station_id:
-            raise WeatherFileParseError(
-                f"Missing station id in {raw_record.source_file} at line {raw_record.line_number}"
-            )
+        """Validate raw record after parsing.
+       Concrete parser for whitespace-delimited weather station text files.
+    
+    Expected file format (whitespace-delimited):
+        YYYYMMDD max_temp min_temp precipitation
+        
+    Where:
+    - YYYYMMDD: Date in format YYYYMMDD
+    - max_temp: Maximum temperature in tenths of Celsius (e.g., 120 = 12.0°C)
+    - min_temp: Minimum temperature in tenths of Celsius
+    - precipitation: Precipitation in tenths of millimeters
+    - Missing values represented as -9999
+    """
 
-    def _transform_raw_record(self, raw_record: WeatherStationRawRecord) -> WeatherObservationCreate:
-        return self.transformation_service.transform(
-            station_id=raw_record.station_id,
-            observation_date=raw_record.observation_date,
-            max_temp_raw=raw_record.max_temp_raw,
-            min_temp_raw=raw_record.min_temp_raw,
-            precipitation_raw=raw_record.precipitation_raw,
-            source_file=raw_record.source_file,
-        )
-
-    def _parse_measurement_token(
+    def _parse_line(
         self,
-        token: str,
         *,
-        field_name: str,
+        raw_line: str,
+        station_id: str,
         source_file: str,
         line_number: int,
-    ) -> Decimal | None:
-        if token == self.missing_value_sentinel:
-            return None
-
-        try:
-            return Decimal(token)
-        except (InvalidOperation, ValueError) as exc:
+    ) -> WeatherStationRawRecord:
+        """Parse whitespace-delimited line.
+        
+        Args:
+            raw_line: Line from input file (whitespace-delimited)
+            station_id: Station ID from filename
+            source_file: Filename for error messages
+            line_number: Line number for error messages
+            
+        Returns:
+            WeatherStationRawRecord: Parsed measurement data
+            
+        Raises:
+            WeatherFileParseError: If line format is invalid
+        """
+        # Split by whitespace, expect exactly 4 columns
+        parts = raw_line.split()
+        if len(parts) != 4:
             raise WeatherFileParseError(
-                f"Invalid {field_name} value in {source_file} at line {line_number}: {token!r}"
+                f"Expected 4 columns in {source_file} at line {line_number}, got {len(parts)}"
+            )
+
+        # Unpack: date, max_temp, min_temp, precipitation
+        date_token, max_temp_token, min_temp_token, precipitation_token = parts
+        
+        # Parse date in YYYYMMDD format
+        try:
+            observation_date = datetime.strptime(date_token, "%Y%m%d").date()
+        except ValueError as exc:
+            raise WeatherFileParseError(
+                f"Invalid observation date in {source_file} at line {line_number}: {date_token!r}"
             ) from exc
+
+        # Parse each measurement, converting sentinel values to None
+        return WeatherStationRawRecord(
+            station_id=station_id,
+            observation_date=observation_date,
+            max_temp_raw=self._parse_measurement_token(
+                max_temp_token,
+                field_name="max_temp_c",
+                source_file=source_file,
+                line_number=line_number,
+            ),
+            min_temp_raw=self._parse_measurement_token(
+                min_temp_token,
+                field_name="min_temp_c",
+                source_file=source_file,
+                line_number=line_number,
+            ),
+            precipitation_raw=self._parse_measurement_token(
+                precipitation_token,
+                field_name="precipitation_cm",
+                source_file=source_file,
+                line_number=line_number,
+            ),
+            source_file=source_file,
+            line_number=line_number,
+        )
+
+
+class WeatherFileIngestor:
+    """Orchestrates file parsing and ingestion into the database.
+    
+    Coordinates between the parser (extracts raw data from files) and
+    the service layer (handles business logic and persistence).
+    
+    Attributes:
+        service: WeatherService instance for data persistence
+        parser: WeatherStationFileParser instance for parsing
+    """
+    
+    def __init__(
+        self,
+        service: "WeatherService",
+        parser: WeatherStationFileParser | None = None,
+    ) -> None:
+        """Initialize ingestor with service and optional parser.
+        
+        Args:
+            service: WeatherService instance for persistence
+            parser: Parser instance (defaults to WeatherStationTextFileParser)
+        """
+        self.service = service
+        self.parser = parser or WeatherStationTextFileParser()
+
+    def ingest(self, records: Iterable[WeatherObservationCreate]):
+        """Ingest parsed records through the service layer.
+        
+        Args:
+            records: Iterable of parsed observation schemas
+            
+        Returns:
+            IngestionSummary: Metrics about processed/inserted/skipped records
+        """
+        return self.service.ingest_observations(records)
+
+    def ingest_file(self, file_path: str | Path):
+        """Orchestrate full file ingestion workflow.
+        
+        Parses the file, ingests records, emits structured log events.
+        
+        Args:
+            file_path: Path to weather station data file
+            
+        Returns:
+            IngestionSummary: Metrics about ingestion (processed, inserted, etc.)
+            
+        Raises:
+            WeatherFileParseError: If file cannot be parsed
+            
+        Implementation:
+            1. Parse the file to extract observations
+            2. Ingest through service layer (idempotent, handles duplicates)
+            3. Emit structured log event with summary metrics
+            4. Return ingestion summary
+        """
+        path = Path(file_path)
+        
+        # Parse file into observations
+        records = self.parser.parse_file(path)
+        
+        # Ingest through service layer (handles duplicates via ON CONFLICT DO NOTHING)
+        summary = self.ingest(records)
+        
+        # Emit structured event for monitoring/logging systems
 
 
 class WeatherStationTextFileParser(WeatherStationFileParser):
