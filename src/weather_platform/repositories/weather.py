@@ -36,6 +36,18 @@ class SQLAlchemyWeatherRepository(WeatherRepository):
             observation.observation_date,
         )  # type: ignore[return-value]
 
+    def insert_observation_if_missing(self, observation: WeatherObservationCreate) -> bool:
+        statement = (
+            insert(WeatherObservation)
+            .values(**observation.model_dump())
+            .on_conflict_do_nothing(
+                index_elements=[WeatherObservation.station_id, WeatherObservation.observation_date]
+            )
+        )
+        result = self.session.execute(statement)
+        self.session.commit()
+        return result.rowcount == 1
+
     def get_observation(self, station_id: str, observation_date: date) -> WeatherObservation | None:
         statement = select(WeatherObservation).where(
             WeatherObservation.station_id == station_id,
