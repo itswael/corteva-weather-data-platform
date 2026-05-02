@@ -1,11 +1,165 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class WeatherObservationCreate(BaseModel):
+    """Request model for creating or updating weather observations.
+    
+    All temperature and precipitation values are optional to support sparse data.
+    Missing values should be omitted from the request body (not set to null).
+    """
+    station_id: str = Field(
+        min_length=1,
+        description="NOAA station identifier (e.g., USC00110072)",
+        example="USC00110072"
+    )
+    observation_date: date = Field(
+        description="Date of observation in YYYY-MM-DD format",
+        example="2023-06-15"
+    )
+    max_temp_c: Decimal | None = Field(
+        default=None,
+        description="Maximum temperature in Celsius (-99.99 to 99.99). Null or omitted if not measured.",
+        example="28.5"
+    )
+    min_temp_c: Decimal | None = Field(
+        default=None,
+        description="Minimum temperature in Celsius (-99.99 to 99.99). Null or omitted if not measured.",
+        example="16.2"
+    )
+    precipitation_cm: Decimal | None = Field(
+        default=None,
+        description="Total precipitation in centimeters (0-999.99). Null or omitted if not measured.",
+        example="0.0"
+    )
+    source_file: str | None = Field(
+        default=None,
+        description="Source file name or identifier for data lineage tracking",
+        example="USC00110072.txt"
+    )
+
+
+class WeatherObservationRead(WeatherObservationCreate):
+    """Response model for weather observations.
+    
+    Includes all fields from WeatherObservationCreate plus system-generated fields
+    (id, created_at). Maps from ORM models using from_attributes configuration.
+    """
+    id: int = Field(
+        description="Unique observation identifier",
+        example=1
+    )
+    created_at: datetime = Field(
+        description="Timestamp when observation was recorded (ISO 8601 UTC)",
+        example="2024-01-15T10:30:00"
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WeatherYearlyStatCreate(BaseModel):
+    """Request model for creating or updating yearly weather statistics.
+    
+    Aggregated annual statistics for a weather station. All aggregate values are
+    optional to support sparse or incomplete data years.
+    """
+    station_id: str = Field(
+        min_length=1,
+        description="NOAA station identifier (e.g., USC00110072)",
+        example="USC00110072"
+    )
+    year: int = Field(
+        ge=1800,
+        le=3000,
+        description="Calendar year for which statistics are aggregated",
+        example=2023
+    )
+    avg_max_temp_c: Decimal | None = Field(
+        default=None,
+        description="Average of daily maximum temperatures in Celsius. Null if no data available.",
+        example="24.3"
+    )
+    avg_min_temp_c: Decimal | None = Field(
+        default=None,
+        description="Average of daily minimum temperatures in Celsius. Null if no data available.",
+        example="12.8"
+    )
+    total_precipitation_cm: Decimal | None = Field(
+        default=None,
+        description="Total annual precipitation in centimeters. Null if no data available.",
+        example="125.4"
+    )
+    observation_count: int = Field(
+        ge=0,
+        description="Number of daily observations included in year aggregate (0 if computed, positive if ingested)",
+        example=365
+    )
+
+
+class WeatherYearlyStatRead(WeatherYearlyStatCreate):
+    """Response model for yearly weather statistics.
+    
+    Includes all fields from WeatherYearlyStatCreate plus system-generated fields
+    (id, created_at). Maps from ORM models using from_attributes configuration.
+    """
+    id: int = Field(
+        description="Unique yearly statistic record identifier",
+        example=1
+    )
+    created_at: datetime = Field(
+        description="Timestamp when statistic was recorded (ISO 8601 UTC)",
+        example="2024-01-01T00:00:00"
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class HTTPErrorResponse(BaseModel):
+    """Standard HTTP error response format.
+    
+    Follows RFC 7807 error response conventions for consistent error handling.
+    """
+    detail: str = Field(
+        description="Human-readable error description",
+        example="Observation not found"
+    )
+
+
+class ValidationErrorDetail(BaseModel):
+    """Details of a single validation error."""
+    loc: list[str | int] = Field(
+        description="Location path to the invalid field (e.g., ['station_id'])",
+        example=["station_id"]
+    )
+    msg: str = Field(
+        description="Validation error message",
+        example="String should have at least 1 character"
+    )
+    type: str = Field(
+        description="Error type code",
+        example="string_too_short"
+    )
+
+
+class ValidationErrorResponse(BaseModel):
+    """Response model for validation errors (HTTP 422)."""
+    detail: list[ValidationErrorDetail] = Field(
+        description="List of validation errors for each invalid field",
+        example=[{
+            "loc": ["station_id"],
+            "msg": "String should have at least 1 character",
+            "type": "string_too_short"
+        }]
+    )
 
 
 class PaginatedWeatherObservationRead(BaseModel):
     """Paginated response for weather observations.
+    
+    Version-safe response contract for querying weather observations with pagination
+    metadata. Supports forward compatibility through sealed field structure.
     
     Attributes:
         items: List of observation records for the current page
@@ -13,10 +167,35 @@ class PaginatedWeatherObservationRead(BaseModel):
         skip: Number of records skipped (pagination offset)
         limit: Maximum records per page
     """
-    items: list["WeatherObservationRead"]
-    total: int
-    skip: int
-    limit: int
+    items: list[WeatherObservationRead] = Field(
+        description="Observations for the current page, ordered by date descending",
+        examples=[[{
+            "id": 1,
+            "station_id": "USC00110072",
+            "observation_date": "2023-06-15",
+            "max_temp_c": "28.5",
+            "min_temp_c": "16.2",
+            "precipitation_cm": "0.0",
+            "source_file": "USC00110072.txt",
+            "created_at": "2024-01-15T10:30:00"
+        }]]
+    )
+    total: int = Field(
+        description="Total number of observations matching filter criteria",
+        ge=0,
+        example=1250
+    )
+    skip: int = Field(
+        description="Number of records skipped (pagination offset)",
+        ge=0,
+        example=0
+    )
+    limit: int = Field(
+        description="Maximum records returned per page",
+        ge=1,
+        le=1000,
+        example=100
+    )
 
 
 class PaginatedWeatherYearlyStatRead(BaseModel):
@@ -24,6 +203,7 @@ class PaginatedWeatherYearlyStatRead(BaseModel):
     
     Version-safe response contract for querying aggregated yearly stats.
     Includes pagination metadata and timestamps for operational visibility.
+    Supports forward compatibility through sealed field structure.
     
     Attributes:
         items: List of yearly stat records for the current page
@@ -31,39 +211,32 @@ class PaginatedWeatherYearlyStatRead(BaseModel):
         skip: Number of records skipped (pagination offset)
         limit: Maximum records per page
     """
-    items: list[WeatherYearlyStatRead]
-    total: int
-    skip: int
-    limit: int
-
-
-class WeatherObservationCreate(BaseModel):
-    station_id: str = Field(min_length=1)
-    observation_date: date
-    max_temp_c: Decimal | None = None
-    min_temp_c: Decimal | None = None
-    precipitation_cm: Decimal | None = None
-    source_file: str | None = None
-
-
-class WeatherObservationRead(WeatherObservationCreate):
-    id: int
-    created_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class WeatherYearlyStatCreate(BaseModel):
-    station_id: str = Field(min_length=1)
-    year: int = Field(ge=1800, le=3000)
-    avg_max_temp_c: Decimal | None = None
-    avg_min_temp_c: Decimal | None = None
-    total_precipitation_cm: Decimal | None = None
-    observation_count: int = Field(ge=0)
-
-
-class WeatherYearlyStatRead(WeatherYearlyStatCreate):
-    id: int
-    created_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
+    items: list[WeatherYearlyStatRead] = Field(
+        description="Yearly statistics for the current page, ordered by year descending",
+        examples=[[{
+            "id": 1,
+            "station_id": "USC00110072",
+            "year": 2023,
+            "avg_max_temp_c": "24.3",
+            "avg_min_temp_c": "12.8",
+            "total_precipitation_cm": "125.4",
+            "observation_count": 365,
+            "created_at": "2024-01-01T00:00:00"
+        }]]
+    )
+    total: int = Field(
+        description="Total number of yearly statistics matching filter criteria",
+        ge=0,
+        example=50
+    )
+    skip: int = Field(
+        description="Number of records skipped (pagination offset)",
+        ge=0,
+        example=0
+    )
+    limit: int = Field(
+        description="Maximum records returned per page",
+        ge=1,
+        le=1000,
+        example=100
+    )
