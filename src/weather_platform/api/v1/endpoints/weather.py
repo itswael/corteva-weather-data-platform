@@ -9,6 +9,7 @@ from weather_platform.schemas.weather import (
     WeatherYearlyStatCreate,
     WeatherYearlyStatRead,
     PaginatedWeatherObservationRead,
+    PaginatedWeatherYearlyStatRead,
 )
 from weather_platform.services.weather import WeatherService
 
@@ -92,4 +93,37 @@ def query_observations(
         station_id=station_id,
         start_date=start_date,
         end_date=end_date,
+    )
+
+
+@router.get("/stats", response_model=PaginatedWeatherYearlyStatRead)
+def query_yearly_stats(
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum records per page"),
+    station_id: str | None = Query(None, description="Filter by station identifier"),
+    start_year: int | None = Query(None, ge=1800, le=3000, description="Minimum year (inclusive)"),
+    end_year: int | None = Query(None, ge=1800, le=3000, description="Maximum year (inclusive)"),
+    service: WeatherService = Depends(get_weather_service),
+) -> PaginatedWeatherYearlyStatRead:
+    """Query yearly weather statistics with pagination and filtering.
+    
+    Returns a paginated list of yearly aggregated statistics optionally filtered
+    by station_id and year range. Results are ordered by year descending (most recent first).
+    
+    Query Parameters:
+        skip: Pagination offset (default: 0)
+        limit: Page size, max 1000 (default: 100)
+        station_id: Optional filter by NOAA station identifier
+        start_year: Optional minimum year (inclusive, 1800-3000)
+        end_year: Optional maximum year (inclusive, 1800-3000)
+    
+    Returns:
+        PaginatedWeatherYearlyStatRead: Yearly stats with pagination metadata
+    """
+    return service.query_yearly_stats(
+        skip=skip,
+        limit=limit,
+        station_id=station_id,
+        start_year=start_year,
+        end_year=end_year,
     )
