@@ -13,7 +13,9 @@ from weather_platform.schemas.weather import (
     WeatherObservationCreate,
     WeatherObservationRead,
     WeatherYearlyStatCreate,
+    WeatherYearlyStatRead,
     PaginatedWeatherObservationRead,
+    PaginatedWeatherYearlyStatRead,
 )
 
 
@@ -117,6 +119,47 @@ class WeatherService:
         
         return PaginatedWeatherObservationRead(
             items=[WeatherObservationRead.model_validate(obs) for obs in observations],
+            total=total_count,
+            skip=skip,
+            limit=safe_limit,
+        )
+    
+    def query_yearly_stats(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+        station_id: str | None = None,
+        start_year: int | None = None,
+        end_year: int | None = None,
+    ) -> PaginatedWeatherYearlyStatRead:
+        """Query yearly statistics with pagination and filtering.
+        
+        Delegates to repository for the actual query, then packages the results
+        into a paginated response DTO with version-safe contracts.
+        
+        Args:
+            skip: Number of records to skip (pagination offset)
+            limit: Maximum records per page (capped at 1000)
+            station_id: Optional station identifier filter
+            start_year: Optional minimum year (inclusive)
+            end_year: Optional maximum year (inclusive)
+            
+        Returns:
+            PaginatedWeatherYearlyStatRead: Paginated yearly stats with total count
+        """
+        # Cap limit to prevent excessive data transfers
+        safe_limit = min(limit, 1000)
+        
+        yearly_stats, total_count = self.repository.query_yearly_stats(
+            skip=skip,
+            limit=safe_limit,
+            station_id=station_id,
+            start_year=start_year,
+            end_year=end_year,
+        )
+        
+        return PaginatedWeatherYearlyStatRead(
+            items=[WeatherYearlyStatRead.model_validate(stat) for stat in yearly_stats],
             total=total_count,
             skip=skip,
             limit=safe_limit,
