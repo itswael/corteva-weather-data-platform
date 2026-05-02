@@ -91,3 +91,28 @@ class WeatherRepository(Protocol):
             tuple[Sequence[WeatherObservation], int]: (observations, total_count)
         """
         ...
+    
+    def query_yearly_stats(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+        station_id: str | None = None,
+        start_year: int | None = None,
+        end_year: int | None = None,
+    ) -> tuple[Sequence[WeatherYearlyStat], int]:
+        """Query yearly statistics with optional filtering and pagination.
+        
+        Filters yearly stats by station_id and year range, then returns
+        a page of results with the total count of matching records.
+        
+        Args:
+            skip: Number of records to skip (pagination offset, default 0)
+            limit: Maximum records to return per page (default 100)
+            station_id: Filter by station identifier (optional)
+            start_year: Filter stats from this year onward (optional)
+            end_year: Filter stats up to this year (optional)
+            
+        Returns:
+            tuple[Sequence[WeatherYearlyStat], int]: (yearly_stats, total_count)
+        """
+        ...

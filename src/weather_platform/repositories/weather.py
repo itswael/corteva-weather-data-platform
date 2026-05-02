@@ -182,3 +182,52 @@ class SQLAlchemyWeatherRepository(WeatherRepository):
 
         observations = self.session.scalars(data_statement).all()
         return observations, total_count
+
+    def query_yearly_stats(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+        station_id: str | None = None,
+        start_year: int | None = None,
+        end_year: int | None = None,
+    ) -> tuple[Sequence[WeatherYearlyStat], int]:
+        """Query yearly statistics with optional filtering and pagination.
+        
+        Builds a filtered query for yearly stats and returns both the paginated
+        results and the total count of matching records. Ordering is by year descending.
+        
+        Args:
+            skip: Number of records to skip for pagination
+            limit: Maximum records per page
+            station_id: Optional filter by station
+            start_year: Optional minimum year (inclusive)
+            end_year: Optional maximum year (inclusive)
+            
+        Returns:
+            tuple[Sequence[WeatherYearlyStat], int]: (stats_page, total_count)
+        """
+        # Build base query with optional filters
+        filters = []
+        if station_id is not None:
+            filters.append(WeatherYearlyStat.station_id == station_id)
+        if start_year is not None:
+            filters.append(WeatherYearlyStat.year >= start_year)
+        if end_year is not None:
+            filters.append(WeatherYearlyStat.year <= end_year)
+
+        # Count total matching records
+        count_statement = select(func.count()).select_from(WeatherYearlyStat)
+        if filters:
+            count_statement = count_statement.where(and_(*filters))
+        total_count = self.session.scalar(count_statement) or 0
+
+        # Fetch paginated results ordered by year descending
+        data_statement = select(WeatherYearlyStat).order_by(
+            desc(WeatherYearlyStat.year)
+        )
+        if filters:
+            data_statement = data_statement.where(and_(*filters))
+        data_statement = data_statement.offset(skip).limit(limit)
+
+        yearly_stats = self.session.scalars(data_statement).all()
+        return yearly_stats, total_count
