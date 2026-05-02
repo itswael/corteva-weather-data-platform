@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import func, and_, extract, select, desc
+from sqlalchemy import func, and_, extract, select, desc, asc
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -10,6 +10,13 @@ from sqlalchemy.orm import Session
 from weather_platform.models.weather_observation import WeatherObservation
 from weather_platform.models.weather_yearly_stat import WeatherYearlyStat
 from weather_platform.repositories.base import WeatherRepository, YearlyAggregateData
+from weather_platform.repositories.pagination import (
+    OffsetPaginator,
+    KeysetPaginator,
+    OffsetPaginationParams,
+    KeysetPaginationParams,
+    PageResult,
+)
 from weather_platform.schemas.weather import WeatherObservationCreate, WeatherYearlyStatCreate
 
 
@@ -231,3 +238,246 @@ class SQLAlchemyWeatherRepository(WeatherRepository):
 
         yearly_stats = self.session.scalars(data_statement).all()
         return yearly_stats, total_count
+
+    # ========== Optimized Query Methods (Pagination-Aware) ==========
+    
+    def query_observations_keyset(
+        self,
+        limit: int = 100,
+        cursor: str | None = None,
+        station_id: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> PageResult[WeatherObservation]:
+        """Query observations using keyset (cursor-based) pagination.
+        
+        More efficient than offset pagination for large datasets.
+        Uses the previous page's last row as a starting point instead of OFFSET.
+        
+        Example:
+            # First page
+            result = repo.query_observations_keyset(limit=100)
+            
+            # Next page using cursor from previous result
+            if result.has_next:
+                result = repo.query_observations_keyset(
+                    limit=100,
+                    cursor=result.cursor
+                )
+        
+        Args:
+            limit: Records per page (max 10000)
+            cursor: Opaque cursor from previous page (None for first page)
+            station_id: Optional filter by station
+            start_date: Optional minimum observation date
+            end_date: Optional maximum observation date
+            
+        Returns:
+            PageResult with items, has_next flag, and next cursor
+        """
+        # Build base statement with filters
+        filters = []
+        if station_id is not None:
+            filters.append(WeatherObservation.station_id == station_id)
+        if start_date is not None:
+            filters.append(WeatherObservation.observation_date >= start_date)
+        if end_date is not None:
+            filters.append(WeatherObservation.observation_date <= end_date)
+
+        def base_query_fn():
+            stmt = select(WeatherObservation).order_by(
+                desc(WeatherObservation.observation_date),
+                WeatherObservation.id,
+            )
+            if filters:
+                stmt = stmt.where(and_(*filters))
+            return stmt, WeatherObservation
+
+        params = KeysetPaginationParams(limit=limit, cursor=cursor)
+        paginator = KeysetPaginator(
+            self.session,
+            keyset_columns=[
+                desc(WeatherObservation.observation_date),
+                WeatherObservation.id,
+            ],
+        )
+        return paginator.paginate(base_query_fn, params)
+
+    def query_yearly_stats_keyset(
+        self,
+        limit: int = 100,
+        cursor: str | None = None,
+        station_id: str | None = None,
+        start_year: int | None = None,
+        end_year: int | None = None,
+    ) -> PageResult[WeatherYearlyStat]:
+        """Query yearly stats using keyset (cursor-based) pagination.
+        
+        More efficient than offset pagination for large datasets.
+        
+        Args:
+            limit: Records per page (max 10000)
+            cursor: Opaque cursor from previous page (None for first page)
+            station_id: Optional filter by station
+            start_year: Optional minimum year (inclusive)
+            end_year: Optional maximum year (inclusive)
+            
+        Returns:
+            PageResult with items, has_next flag, and next cursor
+        """
+        filters = []
+        if station_id is not None:
+            filters.append(WeatherYearlyStat.station_id == station_id)
+        if start_year is not None:
+            filters.append(WeatherYearlyStat.year >= start_year)
+        if end_year is not None:
+            filters.append(WeatherYearlyStat.year <= end_year)
+
+        def base_query_fn():
+            stmt = select(WeatherYearlyStat).order_by(
+                desc(WeatherYearlyStat.year),
+                WeatherYearlyStat.id,
+            )
+            if filters:
+                stmt = stmt.where(and_(*filters))
+            return stmt, WeatherYearlyStat
+
+        params = KeysetPaginationParams(limit=limit, cursor=cursor)
+        paginator = KeysetPaginator(
+            self.session,
+            keyset_columns=[
+                desc(WeatherYearlyStat.year),
+                WeatherYearlyStat.id,
+            ],
+        )
+        return paginator.paginate(base_query_fn, params)
+
+    def query_observations_optimized(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+        station_id: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        use_explain: bool = False,
+    ) -> tuple[Sequence[WeatherObservation], int, dict[str, str] | None]:
+        """Query observations with optional EXPLAIN ANALYZE for query tuning.
+        
+        This method uses offset pagination (traditional) but provides
+        EXPLAIN output for performance analysis and index validation.
+        
+        Args:
+            skip: Number of records to skip
+            limit: Records per page
+            station_id: Optional filter by station
+            start_date: Optional minimum observation date
+            end_date: Optional maximum observation date
+            use_explain: If True, include EXPLAIN ANALYZE in result (PostgreSQL only)
+            
+        Returns:
+            tuple of (observations, total_count, explain_dict)
+            where explain_dict is None or contains {"optimization_tip": "..."}
+        """
+        from weather_platform.repositories.query_optimizer import ExplainAnalyzer
+
+        filters = []
+        if station_id is not None:
+            filters.append(WeatherObservation.station_id == station_id)
+        if start_date is not None:
+            filters.append(WeatherObservation.observation_date >= start_date)
+        if end_date is not None:
+            filters.append(WeatherObservation.observation_date <= end_date)
+
+        # Build count statement
+        count_stmt = select(func.count()).select_from(WeatherObservation)
+        if filters:
+            count_stmt = count_stmt.where(and_(*filters))
+        total_count = self.session.scalar(count_stmt) or 0
+
+        # Build data statement
+        data_stmt = select(WeatherObservation).order_by(
+            desc(WeatherObservation.observation_date)
+        )
+        if filters:
+            data_stmt = data_stmt.where(and_(*filters))
+        data_stmt = data_stmt.offset(skip).limit(limit)
+
+        observations = self.session.scalars(data_stmt).all()
+
+        # Optional: run EXPLAIN ANALYZE for query optimization insights
+        explain_dict = None
+        if use_explain:
+            analyzer = ExplainAnalyzer(self.session, dialect="postgresql")
+            result = analyzer.analyze(data_stmt)
+            if result:
+                explain_dict = {
+                    "planning_time_ms": str(result.planning_time_ms),
+                    "execution_time_ms": str(result.execution_time_ms),
+                    "is_efficient": str(result.is_efficient),
+                    "optimization_needed": result.optimization_needed or "None",
+                }
+
+        return observations, total_count, explain_dict
+
+    def query_yearly_stats_optimized(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+        station_id: str | None = None,
+        start_year: int | None = None,
+        end_year: int | None = None,
+        use_explain: bool = False,
+    ) -> tuple[Sequence[WeatherYearlyStat], int, dict[str, str] | None]:
+        """Query yearly stats with optional EXPLAIN ANALYZE for query tuning.
+        
+        Args:
+            skip: Number of records to skip
+            limit: Records per page
+            station_id: Optional filter by station
+            start_year: Optional minimum year (inclusive)
+            end_year: Optional maximum year (inclusive)
+            use_explain: If True, include EXPLAIN ANALYZE in result (PostgreSQL only)
+            
+        Returns:
+            tuple of (stats, total_count, explain_dict)
+        """
+        from weather_platform.repositories.query_optimizer import ExplainAnalyzer
+
+        filters = []
+        if station_id is not None:
+            filters.append(WeatherYearlyStat.station_id == station_id)
+        if start_year is not None:
+            filters.append(WeatherYearlyStat.year >= start_year)
+        if end_year is not None:
+            filters.append(WeatherYearlyStat.year <= end_year)
+
+        # Build count statement
+        count_stmt = select(func.count()).select_from(WeatherYearlyStat)
+        if filters:
+            count_stmt = count_stmt.where(and_(*filters))
+        total_count = self.session.scalar(count_stmt) or 0
+
+        # Build data statement
+        data_stmt = select(WeatherYearlyStat).order_by(
+            desc(WeatherYearlyStat.year)
+        )
+        if filters:
+            data_stmt = data_stmt.where(and_(*filters))
+        data_stmt = data_stmt.offset(skip).limit(limit)
+
+        yearly_stats = self.session.scalars(data_stmt).all()
+
+        # Optional: run EXPLAIN ANALYZE
+        explain_dict = None
+        if use_explain:
+            analyzer = ExplainAnalyzer(self.session, dialect="postgresql")
+            result = analyzer.analyze(data_stmt)
+            if result:
+                explain_dict = {
+                    "planning_time_ms": str(result.planning_time_ms),
+                    "execution_time_ms": str(result.execution_time_ms),
+                    "is_efficient": str(result.is_efficient),
+                    "optimization_needed": result.optimization_needed or "None",
+                }
+
+        return yearly_stats, total_count, explain_dict

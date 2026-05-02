@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from sqlalchemy import Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import Index, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from weather_platform.models.base import BaseEntity
@@ -14,6 +14,9 @@ class WeatherYearlyStat(BaseEntity):
             "year",
             name="uq_weather_yearly_stats_station_year",
         ),
+        Index("ix_weather_yearly_stats_station_year", "station_id", "year"),
+        Index("ix_weather_yearly_stats_station", "station_id"),
+        Index("ix_weather_yearly_stats_year", "year"),
     )
 
     station_id: Mapped[str] = mapped_column(String, nullable=False)

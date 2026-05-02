@@ -24,6 +24,7 @@ from weather_platform.schemas.weather import (
     WeatherYearlyStatRead,
     PaginatedWeatherObservationRead,
     PaginatedWeatherYearlyStatRead,
+    STATION_ID_PATTERN,
     HTTPErrorResponse,
     ValidationErrorResponse,
 )
@@ -106,7 +107,13 @@ def ingest_observation(
     },
 )
 def get_observation(
-    station_id: str = Path(..., description="NOAA station identifier (e.g., USC00110072)"),
+    station_id: str = Path(
+        ...,
+        min_length=5,
+        max_length=20,
+        pattern=STATION_ID_PATTERN,
+        description="NOAA station identifier (e.g., USC00110072)",
+    ),
     observation_date: date = Path(..., description="Observation date (YYYY-MM-DD format)"),
     service: WeatherService = Depends(get_weather_service),
 ) -> WeatherObservationRead:
@@ -167,7 +174,13 @@ def upsert_yearly_stat(
     },
 )
 def list_yearly_stats(
-    station_id: str = Path(..., min_length=1, description="NOAA station identifier (e.g., USC00110072)"),
+    station_id: str = Path(
+        ...,
+        min_length=5,
+        max_length=20,
+        pattern=STATION_ID_PATTERN,
+        description="NOAA station identifier (e.g., USC00110072)",
+    ),
     service: WeatherService = Depends(get_weather_service),
 ) -> list[WeatherYearlyStatRead]:
     """List all yearly statistics for a station.
@@ -197,7 +210,14 @@ def list_yearly_stats(
 def query_observations(
     skip: int = Query(0, ge=0, description="Pagination offset - number of records to skip", example=0),
     limit: int = Query(100, ge=1, le=1000, description="Page size (max 1000, capped server-side)", example=100),
-    station_id: str | None = Query(None, description="Optional filter by station identifier", example="USC00110072"),
+    station_id: str | None = Query(
+        None,
+        min_length=5,
+        max_length=20,
+        pattern=STATION_ID_PATTERN,
+        description="Optional filter by station identifier",
+        example="USC00110072",
+    ),
     start_date: date | None = Query(None, description="Optional minimum date (YYYY-MM-DD, inclusive)", example="2023-01-01"),
     end_date: date | None = Query(None, description="Optional maximum date (YYYY-MM-DD, inclusive)", example="2023-12-31"),
     service: WeatherService = Depends(get_weather_service),
@@ -222,6 +242,12 @@ def query_observations(
         422: Query parameter validation failed (invalid date format, limit > 1000)
         500: Database error or unexpected server failure
     """
+    if start_date is not None and end_date is not None and start_date > end_date:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="start_date must be less than or equal to end_date",
+        )
+
     return service.query_observations(
         skip=skip,
         limit=limit,
@@ -244,7 +270,14 @@ def query_observations(
 def query_yearly_stats(
     skip: int = Query(0, ge=0, description="Pagination offset - number of records to skip", example=0),
     limit: int = Query(100, ge=1, le=1000, description="Page size (max 1000, capped server-side)", example=100),
-    station_id: str | None = Query(None, description="Optional filter by station identifier", example="USC00110072"),
+    station_id: str | None = Query(
+        None,
+        min_length=5,
+        max_length=20,
+        pattern=STATION_ID_PATTERN,
+        description="Optional filter by station identifier",
+        example="USC00110072",
+    ),
     start_year: int | None = Query(None, ge=1800, le=3000, description="Optional minimum year (inclusive)", example=2020),
     end_year: int | None = Query(None, ge=1800, le=3000, description="Optional maximum year (inclusive)", example=2023),
     service: WeatherService = Depends(get_weather_service),
@@ -269,6 +302,12 @@ def query_yearly_stats(
         422: Query parameter validation failed (invalid year range, limit > 1000)
         500: Database error or unexpected server failure
     """
+    if start_year is not None and end_year is not None and start_year > end_year:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="start_year must be less than or equal to end_year",
+        )
+
     return service.query_yearly_stats(
         skip=skip,
         limit=limit,

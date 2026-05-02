@@ -1,7 +1,11 @@
 from datetime import date, datetime
 from decimal import Decimal
+import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+STATION_ID_PATTERN = r"^[A-Z0-9_]{5,20}$"
+SOURCE_FILE_PATTERN = r"^[A-Za-z0-9._-]{1,255}$"
 
 
 class WeatherObservationCreate(BaseModel):
@@ -12,6 +16,8 @@ class WeatherObservationCreate(BaseModel):
     """
     station_id: str = Field(
         min_length=1,
+        max_length=20,
+        pattern=STATION_ID_PATTERN,
         description="NOAA station identifier (e.g., USC00110072)",
         example="USC00110072"
     )
@@ -21,24 +27,57 @@ class WeatherObservationCreate(BaseModel):
     )
     max_temp_c: Decimal | None = Field(
         default=None,
+        ge=Decimal("-99.99"),
+        le=Decimal("99.99"),
+        max_digits=5,
+        decimal_places=2,
         description="Maximum temperature in Celsius (-99.99 to 99.99). Null or omitted if not measured.",
         example="28.5"
     )
     min_temp_c: Decimal | None = Field(
         default=None,
+        ge=Decimal("-99.99"),
+        le=Decimal("99.99"),
+        max_digits=5,
+        decimal_places=2,
         description="Minimum temperature in Celsius (-99.99 to 99.99). Null or omitted if not measured.",
         example="16.2"
     )
     precipitation_cm: Decimal | None = Field(
         default=None,
+        ge=Decimal("0.00"),
+        le=Decimal("999.99"),
+        max_digits=8,
+        decimal_places=2,
         description="Total precipitation in centimeters (0-999.99). Null or omitted if not measured.",
         example="0.0"
     )
     source_file: str | None = Field(
         default=None,
+        max_length=255,
         description="Source file name or identifier for data lineage tracking",
         example="USC00110072.txt"
     )
+
+    @field_validator("station_id")
+    @classmethod
+    def validate_station_id(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if not re.fullmatch(STATION_ID_PATTERN, normalized):
+            raise ValueError("station_id must be 5-20 uppercase alphanumeric characters")
+        return normalized
+
+    @field_validator("source_file")
+    @classmethod
+    def validate_source_file(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if "/" in normalized or "\\" in normalized or ".." in normalized:
+            raise ValueError("source_file must be a safe filename without path segments")
+        if not re.fullmatch(SOURCE_FILE_PATTERN, normalized):
+            raise ValueError("source_file contains unsupported characters")
+        return normalized
 
 
 class WeatherObservationRead(WeatherObservationCreate):
@@ -67,6 +106,8 @@ class WeatherYearlyStatCreate(BaseModel):
     """
     station_id: str = Field(
         min_length=1,
+        max_length=20,
+        pattern=STATION_ID_PATTERN,
         description="NOAA station identifier (e.g., USC00110072)",
         example="USC00110072"
     )
@@ -78,24 +119,45 @@ class WeatherYearlyStatCreate(BaseModel):
     )
     avg_max_temp_c: Decimal | None = Field(
         default=None,
+        ge=Decimal("-99.99"),
+        le=Decimal("99.99"),
+        max_digits=5,
+        decimal_places=2,
         description="Average of daily maximum temperatures in Celsius. Null if no data available.",
         example="24.3"
     )
     avg_min_temp_c: Decimal | None = Field(
         default=None,
+        ge=Decimal("-99.99"),
+        le=Decimal("99.99"),
+        max_digits=5,
+        decimal_places=2,
         description="Average of daily minimum temperatures in Celsius. Null if no data available.",
         example="12.8"
     )
     total_precipitation_cm: Decimal | None = Field(
         default=None,
+        ge=Decimal("0.00"),
+        le=Decimal("9999.99"),
+        max_digits=10,
+        decimal_places=2,
         description="Total annual precipitation in centimeters. Null if no data available.",
         example="125.4"
     )
     observation_count: int = Field(
         ge=0,
+        le=366,
         description="Number of daily observations included in year aggregate (0 if computed, positive if ingested)",
         example=365
     )
+
+    @field_validator("station_id")
+    @classmethod
+    def validate_station_id(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if not re.fullmatch(STATION_ID_PATTERN, normalized):
+            raise ValueError("station_id must be 5-20 uppercase alphanumeric characters")
+        return normalized
 
 
 class WeatherYearlyStatRead(WeatherYearlyStatCreate):
