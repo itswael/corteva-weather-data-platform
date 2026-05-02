@@ -12,7 +12,6 @@ Features:
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -116,15 +115,22 @@ class ExplainAnalyzer:
         if self.dialect != "postgresql":
             return None
 
-        compiled = str(
-            statement.compile(compile_kwargs={"literal_binds": False})
-        ).replace("\n", " ")
-        explain_query = f"EXPLAIN ANALYZE {compiled}"
+        bind = self.session.get_bind()
+        compiled = statement.compile(
+            dialect=bind.dialect,
+            compile_kwargs={"render_postcompile": True},
+        )
+        compiled_sql = str(compiled).replace("\n", " ").strip()
+        if not compiled_sql.upper().startswith("SELECT"):
+            raise ValueError("EXPLAIN analyzer only supports SELECT statements")
+
+        explain_query = f"EXPLAIN (ANALYZE, FORMAT TEXT) {compiled_sql}"
+        compiled_params = compiled.params
 
         try:
-            result = self.session.execute(text(explain_query))
+            result = self.session.execute(text(explain_query), compiled_params)
             lines = [row[0] for row in result]
-            return self._parse_explain_output(compiled, lines)
+            return self._parse_explain_output(compiled_sql, lines)
         except Exception as e:
             print(f"Failed to execute EXPLAIN ANALYZE: {e}")
             return None
