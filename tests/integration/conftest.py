@@ -12,6 +12,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from weather_platform.api.dependencies import get_weather_repository
+from weather_platform.config.database import get_db_session
 from weather_platform.main import app
 from weather_platform.models.base import Base
 from weather_platform.repositories.weather import SQLAlchemyWeatherRepository
@@ -67,6 +68,8 @@ def db_session(session_factory) -> Session:
 def client(session_factory):
     """Provide a TestClient wired to the transactional test database."""
 
+    app.state.metrics.reset()
+
     def override_weather_repository():
         session = session_factory()
         session.begin_nested()
@@ -81,9 +84,18 @@ def client(session_factory):
         finally:
             session.close()
 
+    def override_db_session():
+        session = session_factory()
+        try:
+            yield session
+        finally:
+            session.close()
+
     app.dependency_overrides[get_weather_repository] = override_weather_repository
+    app.dependency_overrides[get_db_session] = override_db_session
     try:
         with TestClient(app) as test_client:
             yield test_client
     finally:
         app.dependency_overrides.pop(get_weather_repository, None)
+        app.dependency_overrides.pop(get_db_session, None)

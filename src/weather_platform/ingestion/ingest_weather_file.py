@@ -6,6 +6,8 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from weather_platform.utils.observability import get_application_metrics
+from weather_platform.utils.structured_logging import log_structured_event
 from weather_platform.schemas.weather import WeatherObservationCreate
 from weather_platform.services.weather import WeatherService
 
@@ -80,12 +82,35 @@ class WeatherFileIngestor:
         return [self.service.ingest_observation(record) for record in records]
 
     def ingest_file(self, file_path: Path) -> WeatherFileIngestSummary:
-        records = self.parser.parse_file(file_path)
+        metrics = get_application_metrics()
+        log_structured_event("ingestion.file.started", file=file_path.name)
+
+        try:
+            records = self.parser.parse_file(file_path)
+        except WeatherFileParseError:
+            metrics.record_ingestion(files_failed=1, parse_errors=1)
+            log_structured_event("ingestion.file.failed", file=file_path.name)
+            raise
+
         observations = self.ingest(records)
         processed = len(records)
         inserted = len(observations)
-        return WeatherFileIngestSummary(
+        summary = WeatherFileIngestSummary(
             processed=processed,
             inserted=inserted,
             skipped_duplicates=0,
         )
+        metrics.record_ingestion(
+            files_processed=1,
+            records_processed=processed,
+            records_inserted=inserted,
+            duplicate_records=summary.skipped_duplicates,
+        )
+        log_structured_event(
+            "ingestion.file.completed",
+            file=file_path.name,
+            processed=summary.processed,
+            inserted=summary.inserted,
+            skipped_duplicates=summary.skipped_duplicates,
+        )
+        return summary
