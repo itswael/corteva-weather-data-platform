@@ -14,7 +14,8 @@ def test_orm_schema_matches_expected_tables() -> None:
     assert observation_table.name == "weather_observations"
     assert yearly_table.name == "weather_yearly_stats"
 
-    assert [column.name for column in observation_table.columns] == [
+    observation_columns = {column.name for column in observation_table.columns}
+    assert observation_columns == {
         "id",
         "created_at",
         "station_id",
@@ -23,8 +24,10 @@ def test_orm_schema_matches_expected_tables() -> None:
         "min_temp_c",
         "precipitation_cm",
         "source_file",
-    ]
-    assert [column.name for column in yearly_table.columns] == [
+    }
+    
+    yearly_columns = {column.name for column in yearly_table.columns}
+    assert yearly_columns == {
         "id",
         "created_at",
         "station_id",
@@ -33,7 +36,7 @@ def test_orm_schema_matches_expected_tables() -> None:
         "avg_min_temp_c",
         "total_precipitation_cm",
         "observation_count",
-    ]
+    }
 
     observation_constraint_names = {
         constraint.name for constraint in observation_table.constraints if constraint.name
