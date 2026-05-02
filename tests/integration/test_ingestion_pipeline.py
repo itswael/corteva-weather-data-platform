@@ -7,6 +7,9 @@ from weather_platform.ingestion.ingest_weather_file import (
     WeatherStationTextFileParser,
 )
 from weather_platform.repositories.weather import SQLAlchemyWeatherRepository
+from weather_platform.schemas.weather import (
+    WeatherObservationCreate,
+)
 from weather_platform.services.aggregation import WeatherAggregationService
 from weather_platform.services.weather import WeatherService
 
@@ -82,3 +85,56 @@ def test_reprocessing_same_file_remains_idempotent(db_session, tmp_path: Path) -
     assert second_summary.processed == 2
     assert len(observations) == 2
     assert total == 2
+
+
+def test_duplicate_single_observation_ingestion_keeps_one_row(db_session) -> None:
+    """Ingesting the same observation twice should update in place, not duplicate rows."""
+    repository = SQLAlchemyWeatherRepository(db_session)
+    weather_service = WeatherService(repository)
+
+    payload = WeatherObservationCreate(
+        station_id="USC00110072",
+        observation_date=date(2024, 1, 1),
+        max_temp_c=Decimal("10.0"),
+        min_temp_c=Decimal("0.0"),
+        precipitation_cm=Decimal("0.25"),
+        source_file="USC00110072.txt",
+    )
+
+    first = weather_service.ingest_observation(payload)
+    second = weather_service.ingest_observation(payload)
+
+    observations, total = repository.query_observations(station_id="USC00110072")
+
+    assert first.id == second.id
+    assert len(observations) == 1
+    assert total == 1
+
+
+def test_stats_rerun_remains_consistent(db_session, tmp_path: Path) -> None:
+    """Re-running yearly aggregation should keep the same stat row and values."""
+    weather_file = tmp_path / "USC00110072.txt"
+    weather_file.write_text(
+        "20240101 00010 00000 00025\n"
+        "20240102 00020 00010 00050\n",
+        encoding="utf-8",
+    )
+
+    repository = SQLAlchemyWeatherRepository(db_session)
+    weather_service = WeatherService(repository)
+    ingestor = WeatherFileIngestor(service=weather_service, parser=WeatherStationTextFileParser())
+    ingestor.ingest_file(weather_file)
+
+    aggregation_service = WeatherAggregationService(repository)
+    first_stat, first_summary = aggregation_service.aggregate_year("USC00110072", 2024)
+    second_stat, second_summary = aggregation_service.aggregate_year("USC00110072", 2024)
+
+    stats = repository.list_yearly_stats("USC00110072")
+
+    assert first_stat.id == second_stat.id
+    assert first_stat.avg_max_temp_c == second_stat.avg_max_temp_c
+    assert first_stat.avg_min_temp_c == second_stat.avg_min_temp_c
+    assert first_stat.total_precipitation_cm == second_stat.total_precipitation_cm
+    assert first_summary.observations_processed == second_summary.observations_processed == 2
+    assert len(stats) == 1
+    assert stats[0].year == 2024
