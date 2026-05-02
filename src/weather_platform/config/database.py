@@ -70,7 +70,7 @@ def configure_engine_and_session(settings=None):
     if settings is None:
         settings = get_settings()
 
-    factory = EngineFactory(settings.database_url, echo=settings.alchemy_echo)
+    factory = EngineFactory(settings.database_dsn, echo=settings.alchemy_echo)
     engine = factory.create()
     SessionLocal = sessionmaker(
         bind=engine,
