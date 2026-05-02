@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+import re
 
 from pydantic import ValidationError
 
@@ -16,10 +17,28 @@ class WeatherFileParseError(ValueError):
     pass
 
 
+MAX_WEATHER_FILE_BYTES = 10 * 1024 * 1024
+STATION_ID_PATTERN = r"^[A-Z0-9]{5,20}$"
+
+
 class WeatherStationTextFileParser:
     def parse_file(self, file_path: Path) -> list[WeatherObservationCreate]:
         try:
-            station_id = file_path.stem
+            station_id = file_path.stem.upper().strip()
+            if not re.fullmatch(STATION_ID_PATTERN, station_id):
+                raise WeatherFileParseError(
+                    f"Invalid station identifier derived from filename: {file_path.name}"
+                )
+
+            if file_path.suffix.lower() != ".txt":
+                raise WeatherFileParseError("Weather input file must use .txt extension")
+
+            file_size = file_path.stat().st_size
+            if file_size > MAX_WEATHER_FILE_BYTES:
+                raise WeatherFileParseError(
+                    f"Weather input file exceeds size limit ({MAX_WEATHER_FILE_BYTES} bytes)"
+                )
+
             records: list[WeatherObservationCreate] = []
 
             with file_path.open("r", encoding="utf-8") as handle:
@@ -34,12 +53,22 @@ class WeatherStationTextFileParser:
                             f"Invalid weather record on line {line_number}: {line.rstrip()}"
                         )
 
-                    observation_date = date.fromisoformat(
-                        f"{parts[0][0:4]}-{parts[0][4:6]}-{parts[0][6:8]}"
-                    )
-                    max_temp_c = _parse_measurement(parts[1], scale=Decimal("10"))
-                    min_temp_c = _parse_measurement(parts[2], scale=Decimal("10"))
-                    precipitation_cm = _parse_measurement(parts[3], scale=Decimal("100"))
+                    if len(parts[0]) != 8 or not parts[0].isdigit():
+                        raise WeatherFileParseError(
+                            f"Invalid date token on line {line_number}: {parts[0]}"
+                        )
+
+                    try:
+                        observation_date = date.fromisoformat(
+                            f"{parts[0][0:4]}-{parts[0][4:6]}-{parts[0][6:8]}"
+                        )
+                        max_temp_c = _parse_measurement(parts[1], scale=Decimal("10"))
+                        min_temp_c = _parse_measurement(parts[2], scale=Decimal("10"))
+                        precipitation_cm = _parse_measurement(parts[3], scale=Decimal("100"))
+                    except ValueError as exc:
+                        raise WeatherFileParseError(
+                            f"Invalid numeric/date value on line {line_number}: {line.rstrip()}"
+                        ) from exc
 
                     records.append(
                         WeatherObservationCreate(
