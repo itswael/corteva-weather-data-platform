@@ -19,6 +19,24 @@ class PaginatedWeatherObservationRead(BaseModel):
     limit: int
 
 
+class PaginatedWeatherYearlyStatRead(BaseModel):
+    """Paginated response for yearly weather statistics.
+    
+    Version-safe response contract for querying aggregated yearly stats.
+    Includes pagination metadata and timestamps for operational visibility.
+    
+    Attributes:
+        items: List of yearly stat records for the current page
+        total: Total count of stats matching the filter criteria
+        skip: Number of records skipped (pagination offset)
+        limit: Maximum records per page
+    """
+    items: list[WeatherYearlyStatRead]
+    total: int
+    skip: int
+    limit: int
+
+
 class WeatherObservationCreate(BaseModel):
     station_id: str = Field(min_length=1)
     observation_date: date
