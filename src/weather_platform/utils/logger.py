@@ -34,3 +34,15 @@ def configure_logging(level: str = "INFO") -> None:
     handler = logging.StreamHandler()
     handler.setFormatter(StructuredJSONFormatter())
     root_logger.addHandler(handler)
+    # Also write structured logs to a file for local debugging/inspection
+    try:
+        from pathlib import Path
+
+        logs_dir = Path.cwd() / "logs"
+        logs_dir.mkdir(exist_ok=True)
+        file_handler = logging.FileHandler(logs_dir / "api.log", encoding="utf-8")
+        file_handler.setFormatter(StructuredJSONFormatter())
+        root_logger.addHandler(file_handler)
+    except Exception:
+        # best-effort: do not fail application if file logging cannot be established
+        pass

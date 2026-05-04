@@ -23,7 +23,18 @@ STATION_ID_PATTERN = r"^[A-Z0-9]{5,20}$"
 
 
 class WeatherStationTextFileParser:
+    """Parse NOAA station text files into validated observation DTOs.
+
+    Each input file is expected to be a plain-text station file where each
+    non-empty line contains a date token and numeric measurements. This parser
+    reads the file, validates tokens and numeric ranges, converts raw values
+    into Decimal measurements and returns a list of
+    `WeatherObservationCreate` objects ready for ingestion.
+    """
+
     def parse_file(self, file_path: Path) -> list[WeatherObservationCreate]:
+        # Read and validate the station id inferred from filename, file size,
+        # then iterate lines producing validated DTOs for ingestion.
         try:
             station_id = file_path.stem.upper().strip()
             if not re.fullmatch(STATION_ID_PATTERN, station_id):
@@ -40,14 +51,17 @@ class WeatherStationTextFileParser:
                     f"Weather input file exceeds size limit ({MAX_WEATHER_FILE_BYTES} bytes)"
                 )
 
+            # Accumulate validated Pydantic DTOs here
             records: list[WeatherObservationCreate] = []
 
             with file_path.open("r", encoding="utf-8") as handle:
+                # Iterate through each line and convert tokens to DTOs
                 for line_number, line in enumerate(handle, start=1):
                     stripped = line.strip()
                     if not stripped:
                         continue
 
+                    # Tokens: date(YYYYMMDD) max temp min temp precipitation
                     parts = stripped.split()
                     if len(parts) < 4:
                         raise WeatherFileParseError(
@@ -59,6 +73,7 @@ class WeatherStationTextFileParser:
                             f"Invalid date token on line {line_number}: {parts[0]}"
                         )
 
+                    # Convert tokens into typed values and apply sentinel handling
                     try:
                         observation_date = date.fromisoformat(
                             f"{parts[0][0:4]}-{parts[0][4:6]}-{parts[0][6:8]}"
@@ -71,6 +86,7 @@ class WeatherStationTextFileParser:
                             f"Invalid numeric/date value on line {line_number}: {line.rstrip()}"
                         ) from exc
 
+                    # Build a Pydantic DTO — this will validate types and bounds
                     records.append(
                         WeatherObservationCreate(
                             station_id=station_id,
@@ -98,9 +114,17 @@ def _parse_measurement(raw_value: str, scale: Decimal) -> Decimal | None:
 
 @dataclass(frozen=True)
 class WeatherFileIngestSummary:
-    processed: int
-    inserted: int
-    skipped_duplicates: int
+        """Summary counts returned after processing one input file.
+
+        - `processed`: total records parsed from the file
+        - `inserted`: number of new rows inserted into the DB (not counting
+            records that were upserts of existing rows)
+        - `skipped_duplicates`: records that were duplicates and therefore not
+            counted as inserted
+        """
+        processed: int
+        inserted: int
+        skipped_duplicates: int
 
 
 class WeatherFileIngestor:
@@ -109,14 +133,27 @@ class WeatherFileIngestor:
         self.parser = parser
 
     def ingest(self, records: Iterable[WeatherObservationCreate]):
-        # Use service batch ingestion when available for performance
+        # Use service batch ingestion when available for performance. The
+        # service returns an integer count of inserted rows for batch path
+        # (and a list / single-result for the fallback path), so callers must
+        # handle the return value accordingly.
         if hasattr(self.service, "ingest_observations_batch"):
             # service expects a list
             return self.service.ingest_observations_batch(list(records))
 
-        return [self.service.ingest_observation(record) for record in records]
+        # Fallback: ingest sequentially and return number of inserted rows
+        results = [self.service.ingest_observation(record) for record in records]
+        # When falling back the repository returns model instances, so count
+        # these as inserted for the summary
+        return len(results)
 
     def ingest_file(self, file_path: Path) -> WeatherFileIngestSummary:
+        # High-level ingestion flow for a single file:
+        # 1. parse file -> list[WeatherObservationCreate]
+        # 2. ingest records via service (bulk preferred)
+        # 3. compute processed/inserted/skipped counts
+        # 4. trigger aggregation for affected years
+        # 5. record metrics and structured logs
         metrics = get_application_metrics()
         log_structured_event("ingestion.file.started", file=file_path.name)
 
@@ -127,8 +164,13 @@ class WeatherFileIngestor:
             log_structured_event("ingestion.file.failed", file=file_path.name)
             raise
 
+        # `inserted` is expected to be an int when using the optimized batch
+        # ingestion path. The fallback path also returns an int (number
+        # inserted) due to the change above.
         inserted = self.ingest(records)
         processed = len(records)
+        # skipped duplicates are those parsed but not counted as new inserts
+        skipped = processed - (inserted or 0)
         # After ingest, update yearly statistics for the affected station and years
         try:
             if records:
@@ -140,10 +182,12 @@ class WeatherFileIngestor:
         except Exception:
             # Do not fail the whole ingestion if aggregation has an issue; log via metrics
             log_structured_event("ingestion.aggregation.failed", file=file_path.name)
+        # Build a compact summary object to return to callers and to feed
+        # observability metrics.
         summary = WeatherFileIngestSummary(
             processed=processed,
             inserted=inserted,
-            skipped_duplicates=0,
+            skipped_duplicates=skipped,
         )
         metrics.record_ingestion(
             files_processed=1,

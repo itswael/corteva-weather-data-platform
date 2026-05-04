@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import func, and_, extract, select, desc, asc
+from sqlalchemy import func, and_, extract, select, desc, asc, tuple_
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -288,21 +288,46 @@ class SQLAlchemyWeatherRepository(WeatherRepository):
 
         Commits once per chunk and avoids session.expire_all per row. Returns total processed.
         """
-        total = 0
+        total_processed = 0
+        total_inserted = 0
         # Convert pydantic objects to plain dicts suitable for insert
         rows = [obs.model_dump() for obs in observations]
         # Chunk and execute
         for i in range(0, len(rows), chunk_size):
             chunk = rows[i : i + chunk_size]
-            # SQLAlchemy's on_conflict_do_update requires actual values; build set_ mapping using excluded
-            # Use text-based excluded reference via column name from WeatherObservation
+
+            # determine how many of these rows already exist (by station_id+date)
+            keys = [(r["station_id"], r["observation_date"]) for r in chunk]
+            existing_count = 0
+            try:
+                existing_count = (
+                    self.session.scalar(
+                        select(func.count()).select_from(WeatherObservation).where(
+                            tuple_(WeatherObservation.station_id, WeatherObservation.observation_date).in_(keys)
+                        )
+                    )
+                    or 0
+                )
+            except Exception:
+                # If tuple_ in_ is unsupported for the dialect, fall back to per-key OR
+                cond = None
+                from sqlalchemy import or_
+
+                for s, d in keys:
+                    clause = and_(
+                        WeatherObservation.station_id == s,
+                        WeatherObservation.observation_date == d,
+                    )
+                    cond = clause if cond is None else or_(cond, clause)
+                if cond is not None:
+                    existing_count = self.session.scalar(select(func.count()).select_from(WeatherObservation).where(cond)) or 0
+
+            # Build and execute upsert statement
             from sqlalchemy.dialects.postgresql import insert as pg_insert
             bind = self.session.get_bind()
             dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
             if dialect_name == "sqlite":
-                # sqlite uses same API but excluded variable name differs; rely on simple columns
                 stmt = self._insert_for_current_bind(WeatherObservation).values(chunk)
-                # For sqlite SQLAlchemy uses 'excluded' as well
                 stmt = stmt.on_conflict_do_update(
                     index_elements=[WeatherObservation.station_id, WeatherObservation.observation_date],
                     set_={
@@ -326,9 +351,13 @@ class SQLAlchemyWeatherRepository(WeatherRepository):
             # Execute and commit chunk
             self.session.execute(stmt)
             self.session.commit()
-            total += len(chunk)
 
-        return total
+            # update counters: processed is chunk length; inserted excludes existing rows
+            total_processed += len(chunk)
+            total_inserted += max(0, len(chunk) - int(existing_count))
+
+        # Return number of rows inserted (new rows)
+        return total_inserted
 
 
     
