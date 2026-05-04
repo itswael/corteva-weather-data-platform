@@ -5,6 +5,7 @@ from daily observations. Handles aggregation logic and persistence.
 """
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
 
 from weather_platform.models.weather_yearly_stat import WeatherYearlyStat
 from weather_platform.repositories.base import WeatherRepository, YearlyAggregateData
@@ -90,9 +91,9 @@ class WeatherAggregationService:
         stat_create = WeatherYearlyStatCreate(
             station_id=station_id,
             year=year,
-            avg_max_temp_c=aggregate_data.avg_max_temp_c,
-            avg_min_temp_c=aggregate_data.avg_min_temp_c,
-            total_precipitation_cm=aggregate_data.total_precipitation_cm,
+            avg_max_temp_c=_quantize_decimal(aggregate_data.avg_max_temp_c),
+            avg_min_temp_c=_quantize_decimal(aggregate_data.avg_min_temp_c),
+            total_precipitation_cm=_quantize_decimal(aggregate_data.total_precipitation_cm),
             observation_count=aggregate_data.observation_count,
         )
         yearly_stat = self.repository.upsert_yearly_stat(stat_create)
@@ -145,3 +146,9 @@ class WeatherAggregationService:
             _, summary = self.aggregate_year(station_id, year)
             summaries.append(summary)
         return summaries
+
+
+def _quantize_decimal(value: Decimal | None) -> Decimal | None:
+    if value is None:
+        return None
+    return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)

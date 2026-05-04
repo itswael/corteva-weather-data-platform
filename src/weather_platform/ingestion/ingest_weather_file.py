@@ -11,6 +11,7 @@ from weather_platform.utils.observability import get_application_metrics
 from weather_platform.utils.structured_logging import log_structured_event
 from weather_platform.schemas.weather import WeatherObservationCreate
 from weather_platform.services.weather import WeatherService
+from weather_platform.services.aggregation import WeatherAggregationService
 
 
 class WeatherFileParseError(ValueError):
@@ -128,6 +129,17 @@ class WeatherFileIngestor:
 
         inserted = self.ingest(records)
         processed = len(records)
+        # After ingest, update yearly statistics for the affected station and years
+        try:
+            if records:
+                station = records[0].station_id
+                years = sorted({r.observation_date.year for r in records})
+                aggregation_service = WeatherAggregationService(self.service.repository)
+                for y in years:
+                    aggregation_service.aggregate_year(station, y)
+        except Exception:
+            # Do not fail the whole ingestion if aggregation has an issue; log via metrics
+            log_structured_event("ingestion.aggregation.failed", file=file_path.name)
         summary = WeatherFileIngestSummary(
             processed=processed,
             inserted=inserted,
