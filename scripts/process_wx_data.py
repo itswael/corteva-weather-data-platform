@@ -19,6 +19,9 @@ from weather_platform.ingestion.ingest_weather_file import WeatherFileIngestor, 
 from weather_platform.services.weather import WeatherService
 from weather_platform.repositories.weather import SQLAlchemyWeatherRepository
 from weather_platform.config.database import SessionLocal
+import logging
+import os
+from datetime import datetime
 
 
 def main():
@@ -26,7 +29,25 @@ def main():
     if not data_dir.exists():
         print(f"wx_data directory not found at {data_dir}")
         return
+    
+    # ensure logs directory exists and configure logging
+    logs_dir = ROOT / "logs"
+    try:
+        logs_dir.mkdir(exist_ok=True)
+    except Exception:
+        pass
 
+    log_file = logs_dir / "ingestion.log"
+    logger = logging.getLogger("weather_ingest")
+    if not logger.handlers:
+        logger.setLevel(logging.INFO)
+        fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+        sh = logging.StreamHandler()
+        sh.setFormatter(fmt)
+        fh = logging.FileHandler(str(log_file), encoding="utf-8")
+        fh.setFormatter(fmt)
+        logger.addHandler(sh)
+        logger.addHandler(fh)
     session = SessionLocal()
     try:
         repository = SQLAlchemyWeatherRepository(session)
@@ -36,23 +57,28 @@ def main():
 
         total_processed = 0
         total_inserted = 0
+        start_time = datetime.utcnow()
+        logger.info("Ingestion started: wx_data=%s", str(data_dir))
         files = sorted([p for p in data_dir.iterdir() if p.suffix.lower() == ".txt"])
         if not files:
-            print("No .txt files found in wx_data")
+            logger.info("No .txt files found in wx_data")
             return
 
         for f in files:
             try:
                 summary = ingestor.ingest_file(f)
-                print(f"Processed {f.name}: processed={summary.processed}, inserted={summary.inserted}, skipped={summary.skipped_duplicates}")
+                logger.info("Processed %s: processed=%d inserted=%d skipped=%d", f.name, summary.processed, summary.inserted, summary.skipped_duplicates)
                 total_processed += summary.processed
                 total_inserted += summary.inserted
             except Exception as exc:
-                print(f"Failed to process {f.name}: {exc}")
+                logger.exception("Failed to process %s", f.name)
 
-        print(f"\nSummary: files={len(files)}, total_processed={total_processed}, total_inserted={total_inserted}")
+        end_time = datetime.utcnow()
+        duration = end_time - start_time
+        logger.info("Summary: files=%d total_processed=%d total_inserted=%d duration=%s", len(files), total_processed, total_inserted, str(duration))
     finally:
         session.close()
+        logger.info("Session closed")
 
 
 if __name__ == "__main__":
