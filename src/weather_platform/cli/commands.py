@@ -96,7 +96,7 @@ def ingest(file_path: Path, env: str) -> None:
             status="success",
         )
 
-        click.echo(f"\n✓ Ingestion completed")
+        click.echo(f"\nIngestion completed")
         click.echo(f"  Processed: {summary.processed}, Inserted: {summary.inserted}, Skipped: {summary.skipped_duplicates}")
 
         sys.exit(0)
@@ -108,7 +108,7 @@ def ingest(file_path: Path, env: str) -> None:
             error=str(exc),
             status="failed",
         )
-        click.echo(f"\n✗ Ingestion failed: {exc}", err=True)
+        click.echo(f"\nIngestion failed: {exc}", err=True)
         sys.exit(1)
 
 
@@ -161,7 +161,7 @@ def aggregate_year(station_id: str, year: int, env: str) -> None:
             status="success",
         )
         
-        click.echo(f"\n✓ Aggregation completed for {station_id} ({year})")
+        click.echo(f"\nAggregation completed for {station_id} ({year})")
         click.echo(f"  Observations: {summary.observations_processed}")
         click.echo(f"  Avg max temp: {yearly_stat.avg_max_temp_c}°C")
         click.echo(f"  Avg min temp: {yearly_stat.avg_min_temp_c}°C")
@@ -178,5 +178,5 @@ def aggregate_year(station_id: str, year: int, env: str) -> None:
             error=str(exc),
             status="failed",
         )
-        click.echo(f"\n✗ Aggregation failed: {exc}", err=True)
+        click.echo(f"\nAggregation failed: {exc}", err=True)
         sys.exit(1)
