@@ -294,7 +294,7 @@ class PaginatedWeatherYearlyStatRead(BaseModel):
     skip: int = Field(
         description="Number of records skipped (pagination offset)",
         ge=0,
-        example=0
+        example=1
     )
     limit: int = Field(
         description="Maximum records returned per page",
