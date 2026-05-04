@@ -173,12 +173,12 @@ Query parameters for `GET /stats`:
 ### Target services
 
 - **ALB** for public API traffic
-- **ECS Fargate** for the FastAPI API service
-- **ECS Fargate scheduled task** for ingestion
-- **RDS PostgreSQL Multi-AZ** for transactional storage
-- **S3** for raw weather files and file retention
-- **EventBridge** for scheduled ingestion execution
+- **Amazon ECS** (Fargate launch type) for FastAPI service
+- **EventBridge** → ECS Fargate task for scheduled ingestion
+- **RDS PostgreSQL** (Multi-AZ) for transactional storage
+- **S3** for raw weather data and retention
 - **CloudWatch** for logs, metrics, alarms, and dashboards
+- **AWS Secrets Manager** for secure configuration (DB creds, API keys)
 
 ### Infrastructure recommendations
 
