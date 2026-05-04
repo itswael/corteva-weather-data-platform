@@ -4,6 +4,7 @@ import os
 from typing import Optional
 
 from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -22,6 +23,17 @@ class EngineFactory:
         self.echo = echo
 
     def create(self) -> Engine:
+        # Special-case in-memory SQLite: use a StaticPool and disable same-thread
+        # checks so multiple connections (TestClient, test fixtures) see the
+        # same in-memory database instance.
+        if isinstance(self.url, str) and "sqlite" in self.url and ":memory:" in self.url:
+            return create_engine(
+                self.url,
+                echo=self.echo,
+                pool_pre_ping=True,
+                connect_args={"check_same_thread": False},
+                poolclass=StaticPool,
+            )
         return create_engine(self.url, echo=self.echo, pool_pre_ping=True)
 
 
