@@ -267,8 +267,9 @@ class KeysetPaginator(PaginationStrategy[T]):
 
         values = []
         for col in self.keyset_columns:
-            # Extract the actual column name from the ColumnElement
-            col_name = col.name if hasattr(col, "name") else str(col)
+            # If column is an ordering expression (e.g. desc(col)), get the underlying element
+            base = getattr(col, "element", col)
+            col_name = getattr(base, "key", getattr(base, "name", str(base)))
             col_value = getattr(row, col_name, None)
             # Serialize to string for JSON
             values.append(str(col_value))
@@ -298,21 +299,67 @@ class KeysetPaginator(PaginationStrategy[T]):
             raise ValueError(f"Invalid cursor format: {e}")
 
     def _add_keyset_filter(self, stmt, keyset_values: list):
-        """Add keyset comparison clause to WHERE condition.
-        
-        Creates: (col1, col2, ...) > (val1, val2, ...)
-        This positions the query after the previous page's last row.
-        
-        Args:
-            stmt: SQLAlchemy select statement
-            keyset_values: Values from previous page's last row
-            
-        Returns:
-            Modified SELECT statement with keyset WHERE clause
+        """Add keyset comparison clause to WHERE condition with type coercion.
+
+        Creates a lexicographic comparison that respects SQLAlchemy column types
+        by coercing decoded cursor values to the underlying Python types before
+        building comparison expressions.
         """
-        from sqlalchemy import tuple_
+        from sqlalchemy import or_, and_
+        from datetime import date as _date
+        from decimal import Decimal as _Decimal
+        from sqlalchemy.sql.sqltypes import Date as _SQLDate, Integer as _SQLInteger, Numeric as _SQLNumeric
 
-        # Build tuple comparison: (col1, col2, ...) > (val1, val2, ...)
-        keyset_comparison = tuple_(self.keyset_columns) > tuple_(keyset_values)
+        # Normalize columns (strip ordering wrappers like desc()) and determine comparison direction
+        comparison_columns = []
+        directions = []  # 'gt' for ascending, 'lt' for descending
+        for col in self.keyset_columns:
+            base = getattr(col, "element", col)
+            comparison_columns.append(base)
+            # Heuristic: if ordering expression contains DESC, treat as descending
+            if "DESC" in str(col).upper():
+                directions.append("lt")
+            else:
+                directions.append("gt")
 
-        return stmt.where(keyset_comparison)
+        # Build lexicographic comparison:
+        # (c1 op1 v1) OR (c1 == v1 AND c2 op2 v2) OR (...)
+        if len(comparison_columns) != len(keyset_values):
+            raise ValueError("cursor length does not match keyset columns")
+
+        def _coerce_value(raw_val, column):
+            col_type = getattr(column, "type", None)
+            # If value already appears to be the correct python type, return as-is
+            if raw_val is None:
+                return None
+            try:
+                # Dates are encoded as ISO strings in the cursor
+                if isinstance(col_type, _SQLDate):
+                    return _date.fromisoformat(raw_val) if isinstance(raw_val, str) else raw_val
+                if isinstance(col_type, _SQLInteger):
+                    return int(raw_val)
+                if isinstance(col_type, _SQLNumeric):
+                    return _Decimal(str(raw_val))
+            except Exception:
+                # Fall back to the raw value on any conversion error
+                return raw_val
+            return raw_val
+
+        conditions = []
+        for i in range(len(comparison_columns)):
+            # Build equality prefix using coerced values
+            left_eq = [comparison_columns[j] == _coerce_value(keyset_values[j], comparison_columns[j]) for j in range(i)]
+            op_col = comparison_columns[i]
+            op_val = _coerce_value(keyset_values[i], op_col)
+            if directions[i] == "lt":
+                cmp_expr = op_col < op_val
+            else:
+                cmp_expr = op_col > op_val
+
+            if left_eq:
+                conditions.append(and_(*left_eq, cmp_expr))
+            else:
+                conditions.append(cmp_expr)
+
+        keyset_condition = or_(*conditions)
+        return stmt.where(keyset_condition)
