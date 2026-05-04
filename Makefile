@@ -2,7 +2,10 @@ install:
 	pip install -e .[dev]
 
 run:
-	uvicorn weather_platform.main:app --reload
+	uvicorn weather_platform.main:app --host 0.0.0.0 --port 8000 --reload
+
+ingest:
+	.venv/Scripts/python.exe scripts/process_wx_data.py
 
 test:
 	pytest

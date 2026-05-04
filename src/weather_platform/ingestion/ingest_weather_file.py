@@ -11,6 +11,7 @@ from weather_platform.utils.observability import get_application_metrics
 from weather_platform.utils.structured_logging import log_structured_event
 from weather_platform.schemas.weather import WeatherObservationCreate
 from weather_platform.services.weather import WeatherService
+from weather_platform.services.aggregation import WeatherAggregationService
 
 
 class WeatherFileParseError(ValueError):
@@ -108,6 +109,11 @@ class WeatherFileIngestor:
         self.parser = parser
 
     def ingest(self, records: Iterable[WeatherObservationCreate]):
+        # Use service batch ingestion when available for performance
+        if hasattr(self.service, "ingest_observations_batch"):
+            # service expects a list
+            return self.service.ingest_observations_batch(list(records))
+
         return [self.service.ingest_observation(record) for record in records]
 
     def ingest_file(self, file_path: Path) -> WeatherFileIngestSummary:
@@ -121,9 +127,19 @@ class WeatherFileIngestor:
             log_structured_event("ingestion.file.failed", file=file_path.name)
             raise
 
-        observations = self.ingest(records)
+        inserted = self.ingest(records)
         processed = len(records)
-        inserted = len(observations)
+        # After ingest, update yearly statistics for the affected station and years
+        try:
+            if records:
+                station = records[0].station_id
+                years = sorted({r.observation_date.year for r in records})
+                aggregation_service = WeatherAggregationService(self.service.repository)
+                for y in years:
+                    aggregation_service.aggregate_year(station, y)
+        except Exception:
+            # Do not fail the whole ingestion if aggregation has an issue; log via metrics
+            log_structured_event("ingestion.aggregation.failed", file=file_path.name)
         summary = WeatherFileIngestSummary(
             processed=processed,
             inserted=inserted,

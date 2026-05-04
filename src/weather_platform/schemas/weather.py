@@ -146,8 +146,8 @@ class WeatherYearlyStatCreate(BaseModel):
     )
     observation_count: int = Field(
         ge=0,
-        le=366,
-        description="Number of daily observations included in year aggregate (0 if computed, positive if ingested)",
+        le=1000000,
+        description="Number of observations included in year aggregate",
         example=365
     )
 

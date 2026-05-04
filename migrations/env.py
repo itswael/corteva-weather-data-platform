@@ -17,13 +17,13 @@ from weather_platform.models import weather_observation, weather_yearly_stat  # 
 config = context.config
 fileConfig(config.config_file_name)
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.database_url)
+config.set_main_option("sqlalchemy.url", settings.database_dsn)
 target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=settings.database_url,
+        url=settings.database_dsn,
         target_metadata=target_metadata,
         literal_binds=True,
         compare_type=True,

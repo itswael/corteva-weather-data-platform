@@ -283,6 +283,53 @@ class SQLAlchemyWeatherRepository(WeatherRepository):
         yearly_stats = self.session.scalars(data_statement).all()
         return yearly_stats, total_count
 
+    def bulk_upsert_observations(self, observations: list[WeatherObservationCreate], chunk_size: int = 1000) -> int:
+        """Efficiently upsert multiple observations in chunks using dialect INSERT..ON CONFLICT.
+
+        Commits once per chunk and avoids session.expire_all per row. Returns total processed.
+        """
+        total = 0
+        # Convert pydantic objects to plain dicts suitable for insert
+        rows = [obs.model_dump() for obs in observations]
+        # Chunk and execute
+        for i in range(0, len(rows), chunk_size):
+            chunk = rows[i : i + chunk_size]
+            # SQLAlchemy's on_conflict_do_update requires actual values; build set_ mapping using excluded
+            # Use text-based excluded reference via column name from WeatherObservation
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+            bind = self.session.get_bind()
+            dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
+            if dialect_name == "sqlite":
+                # sqlite uses same API but excluded variable name differs; rely on simple columns
+                stmt = self._insert_for_current_bind(WeatherObservation).values(chunk)
+                # For sqlite SQLAlchemy uses 'excluded' as well
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=[WeatherObservation.station_id, WeatherObservation.observation_date],
+                    set_={
+                        "max_temp_c": stmt.excluded.max_temp_c,
+                        "min_temp_c": stmt.excluded.min_temp_c,
+                        "precipitation_cm": stmt.excluded.precipitation_cm,
+                        "source_file": stmt.excluded.source_file,
+                    },
+                )
+            else:
+                stmt = pg_insert(WeatherObservation).values(chunk).on_conflict_do_update(
+                    index_elements=[WeatherObservation.station_id, WeatherObservation.observation_date],
+                    set_={
+                        "max_temp_c": pg_insert(WeatherObservation).excluded.max_temp_c,
+                        "min_temp_c": pg_insert(WeatherObservation).excluded.min_temp_c,
+                        "precipitation_cm": pg_insert(WeatherObservation).excluded.precipitation_cm,
+                        "source_file": pg_insert(WeatherObservation).excluded.source_file,
+                    },
+                )
+
+            # Execute and commit chunk
+            self.session.execute(stmt)
+            self.session.commit()
+            total += len(chunk)
+
+        return total
+
 
     
 
