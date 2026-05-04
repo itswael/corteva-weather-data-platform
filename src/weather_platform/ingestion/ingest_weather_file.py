@@ -129,6 +129,7 @@ class WeatherFileIngestor:
 
         inserted = self.ingest(records)
         processed = len(records)
+        skipped = processed - (inserted or 0)
         # After ingest, update yearly statistics for the affected station and years
         try:
             if records:
@@ -143,7 +144,7 @@ class WeatherFileIngestor:
         summary = WeatherFileIngestSummary(
             processed=processed,
             inserted=inserted,
-            skipped_duplicates=0,
+            skipped_duplicates=skipped,
         )
         metrics.record_ingestion(
             files_processed=1,
