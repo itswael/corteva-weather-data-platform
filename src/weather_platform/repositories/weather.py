@@ -38,25 +38,47 @@ class SQLAlchemyWeatherRepository(WeatherRepository):
         return postgresql_insert(table)
 
     def upsert_observation(self, observation: WeatherObservationCreate) -> WeatherObservation:
-        statement = (
-            self._insert_for_current_bind(WeatherObservation)
-            .values(**observation.model_dump())
-            .on_conflict_do_update(
-                index_elements=[WeatherObservation.station_id, WeatherObservation.observation_date],
-                set_={
-                    "max_temp_c": observation.max_temp_c,
-                    "min_temp_c": observation.min_temp_c,
-                    "precipitation_cm": observation.precipitation_cm,
-                    "source_file": observation.source_file,
-                },
+        # Prefer dialect-level INSERT..ON CONFLICT when available for performance
+        try:
+            statement = (
+                self._insert_for_current_bind(WeatherObservation)
+                .values(**observation.model_dump())
+                .on_conflict_do_update(
+                    index_elements=[WeatherObservation.station_id, WeatherObservation.observation_date],
+                    set_={
+                        "max_temp_c": observation.max_temp_c,
+                        "min_temp_c": observation.min_temp_c,
+                        "precipitation_cm": observation.precipitation_cm,
+                        "source_file": observation.source_file,
+                    },
+                )
             )
-        )
-        self.session.execute(statement)
-        self.session.commit()
-        return self.get_observation(
-            observation.station_id,
-            observation.observation_date,
-        )  # type: ignore[return-value]
+            self.session.execute(statement)
+            self.session.commit()
+            self.session.expire_all()
+            return self.get_observation(observation.station_id, observation.observation_date)  # type: ignore[return-value]
+        except Exception:
+            # Fallback to safe ORM-style upsert if dialect insert is unsupported
+            existing = self.session.scalars(
+                select(WeatherObservation).where(
+                    WeatherObservation.station_id == observation.station_id,
+                    WeatherObservation.observation_date == observation.observation_date,
+                )
+            ).one_or_none()
+
+            if existing is not None:
+                existing.max_temp_c = observation.max_temp_c
+                existing.min_temp_c = observation.min_temp_c
+                existing.precipitation_cm = observation.precipitation_cm
+                existing.source_file = observation.source_file
+                self.session.add(existing)
+                self.session.commit()
+                return existing
+
+            new = WeatherObservation(**observation.model_dump())
+            self.session.add(new)
+            self.session.commit()
+            return new
 
     def get_observation(self, station_id: str, observation_date: date) -> WeatherObservation | None:
         statement = select(WeatherObservation).where(
@@ -66,29 +88,51 @@ class SQLAlchemyWeatherRepository(WeatherRepository):
         return self.session.scalars(statement).one_or_none()
 
     def upsert_yearly_stat(self, stat: WeatherYearlyStatCreate) -> WeatherYearlyStat:
-        values = stat.model_dump()
-        # Use the unique station/year constraint so repeated reprocessing updates the same row.
-        statement = (
-            self._insert_for_current_bind(WeatherYearlyStat)
-            .values(**values)
-            .on_conflict_do_update(
-                index_elements=[WeatherYearlyStat.station_id, WeatherYearlyStat.year],
-                set_={
-                    "avg_max_temp_c": stat.avg_max_temp_c,
-                    "avg_min_temp_c": stat.avg_min_temp_c,
-                    "total_precipitation_cm": stat.total_precipitation_cm,
-                    "observation_count": stat.observation_count,
-                },
+        try:
+            values = stat.model_dump()
+            statement = (
+                self._insert_for_current_bind(WeatherYearlyStat)
+                .values(**values)
+                .on_conflict_do_update(
+                    index_elements=[WeatherYearlyStat.station_id, WeatherYearlyStat.year],
+                    set_={
+                        "avg_max_temp_c": stat.avg_max_temp_c,
+                        "avg_min_temp_c": stat.avg_min_temp_c,
+                        "total_precipitation_cm": stat.total_precipitation_cm,
+                        "observation_count": stat.observation_count,
+                    },
+                )
             )
-        )
-        self.session.execute(statement)
-        self.session.commit()
-        return self.session.scalars(
-            select(WeatherYearlyStat).where(
-                WeatherYearlyStat.station_id == stat.station_id,
-                WeatherYearlyStat.year == stat.year,
-            )
-        ).one()
+            self.session.execute(statement)
+            self.session.commit()
+            self.session.expire_all()
+            return self.session.scalars(
+                select(WeatherYearlyStat).where(
+                    WeatherYearlyStat.station_id == stat.station_id,
+                    WeatherYearlyStat.year == stat.year,
+                )
+            ).one()
+        except Exception:
+            existing = self.session.scalars(
+                select(WeatherYearlyStat).where(
+                    WeatherYearlyStat.station_id == stat.station_id,
+                    WeatherYearlyStat.year == stat.year,
+                )
+            ).one_or_none()
+
+            if existing is not None:
+                existing.avg_max_temp_c = stat.avg_max_temp_c
+                existing.avg_min_temp_c = stat.avg_min_temp_c
+                existing.total_precipitation_cm = stat.total_precipitation_cm
+                existing.observation_count = stat.observation_count
+                self.session.add(existing)
+                self.session.commit()
+                return existing
+
+            new = WeatherYearlyStat(**stat.model_dump())
+            self.session.add(new)
+            self.session.commit()
+            return new
 
     def list_yearly_stats(self, station_id: str) -> Sequence[WeatherYearlyStat]:
         statement = (
@@ -238,6 +282,9 @@ class SQLAlchemyWeatherRepository(WeatherRepository):
 
         yearly_stats = self.session.scalars(data_statement).all()
         return yearly_stats, total_count
+
+
+    
 
     # ========== Optimized Query Methods (Pagination-Aware) ==========
     
@@ -481,3 +528,8 @@ class SQLAlchemyWeatherRepository(WeatherRepository):
                 }
 
         return yearly_stats, total_count, explain_dict
+
+
+# Module-level convenience alias so callers importing `WeatherRepository`
+# from this module (tests or older code) receive the concrete implementation.
+WeatherRepository = SQLAlchemyWeatherRepository

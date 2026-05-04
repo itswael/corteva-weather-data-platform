@@ -237,8 +237,21 @@ class TestKeysetPaginator:
         assert page2_ids.isdisjoint(page3_ids)
         assert page1_ids.isdisjoint(page3_ids)
 
-        # Verify total coverage
+        # Verify total coverage - continue paginating until all records are covered
         all_ids = page1_ids | page2_ids | page3_ids
+        
+        # If there are more pages, continue fetching
+        cursor = result3.cursor
+        while result3.has_next and cursor:
+            result_next = paginator.paginate(
+                query_callable,
+                KeysetPaginationParams(limit=3, cursor=cursor),
+            )
+            page_ids = {item.id for item in result_next.items}
+            all_ids.update(page_ids)
+            result3 = result_next
+            cursor = result3.cursor
+        
         assert len(all_ids) == 10  # All records covered
 
     def test_keyset_pagination_invalid_cursor(self, db_session: Session):
