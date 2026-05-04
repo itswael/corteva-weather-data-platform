@@ -162,7 +162,7 @@ class TestYearlyStatsQueryFiltering:
         repository = WeatherRepository(db_session)
 
         stats, total = repository.query_yearly_stats(end_year=2021)
-        assert total == 3  # 2020, 2021 (1 station), 2021 (other)
+        assert total == 2  # 2020, 2021 (only USC00110072 has years <= 2021)
         assert all(stat.year <= 2021 for stat in stats)
 
     def test_query_yearly_stats_filter_combined(
