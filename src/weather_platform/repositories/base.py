@@ -116,3 +116,7 @@ class WeatherRepository(Protocol):
             tuple[Sequence[WeatherYearlyStat], int]: (yearly_stats, total_count)
         """
         ...
+
+    def bulk_upsert_observations(self, observations: list[object], chunk_size: int = 1000) -> int:
+        """Bulk insert or update observations in chunks. Returns number of rows inserted/updated."""
+        ...

@@ -49,6 +49,19 @@ class WeatherService:
         """
         return self.repository.upsert_observation(observation)
 
+    def ingest_observations_batch(self, observations: list[WeatherObservationCreate], chunk_size: int = 1000) -> int:
+        """Bulk ingest observations using repository bulk method. Returns number of records processed."""
+        # Delegate to repository optimized bulk implementation when available
+        if hasattr(self.repository, "bulk_upsert_observations"):
+            return self.repository.bulk_upsert_observations(observations=observations, chunk_size=chunk_size)
+
+        # Fallback: sequential ingestion
+        count = 0
+        for obs in observations:
+            self.ingest_observation(obs)
+            count += 1
+        return count
+
     def get_observation(self, station_id: str, observation_date: date) -> WeatherObservation | None:
         """Retrieve a specific observation.
         

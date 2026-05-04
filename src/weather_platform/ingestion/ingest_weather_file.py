@@ -108,6 +108,11 @@ class WeatherFileIngestor:
         self.parser = parser
 
     def ingest(self, records: Iterable[WeatherObservationCreate]):
+        # Use service batch ingestion when available for performance
+        if hasattr(self.service, "ingest_observations_batch"):
+            # service expects a list
+            return self.service.ingest_observations_batch(list(records))
+
         return [self.service.ingest_observation(record) for record in records]
 
     def ingest_file(self, file_path: Path) -> WeatherFileIngestSummary:
@@ -121,9 +126,8 @@ class WeatherFileIngestor:
             log_structured_event("ingestion.file.failed", file=file_path.name)
             raise
 
-        observations = self.ingest(records)
+        inserted = self.ingest(records)
         processed = len(records)
-        inserted = len(observations)
         summary = WeatherFileIngestSummary(
             processed=processed,
             inserted=inserted,
